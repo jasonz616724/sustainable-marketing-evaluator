@@ -1,13 +1,10 @@
 import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
 import json
 from openai import OpenAI
+from io import StringIO
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
-plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
 
 # --- Initialize OpenAI Client ---
 try:
@@ -30,7 +27,6 @@ if "campaign_data" not in st.session_state:
         "Local Vendor %": 0,
         "governance_checks": [False]*5,
         "operations_checks": [False]*5,
-        "ai_recommendations": [],
     }
 if "current_step" not in st.session_state:
     st.session_state["current_step"] = 0
@@ -38,6 +34,8 @@ if "conversation" not in st.session_state:
     st.session_state["conversation"] = []
 if "waiting_for_input" not in st.session_state:
     st.session_state["waiting_for_input"] = True
+if "report_text" not in st.session_state:
+    st.session_state["report_text"] = ""
 
 # --- Constants ---
 EMISSION_FACTORS = {
@@ -67,49 +65,47 @@ OPERATIONS_CRITERIA = [
 # --- Core AI Functions ---
 def get_ai_response(prompt, system_msg="You are a helpful assistant."):
     if not OPENAI_AVAILABLE:
-        return "❌ AI requires OPENAI_API_KEY in secrets."
+        return "AI features require an OPENAI_API_KEY."
     
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
-            temperature=0.4,  # Lower temp for more consistent factual responses
+            temperature=0.4,
             timeout=15
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        st.error(f"⚠️ AI error: {str(e)}")
-        return "❌ AI response failed. Try again."
+        st.error(f"AI error: {str(e)}")
+        return "Failed to generate AI response."
 
-# Enhanced distance estimation function
 def estimate_distance(departure, destination):
     if not OPENAI_AVAILABLE or not departure or not destination:
         return None
         
-    prompt = f"""Estimate the travel distance in kilometers between {departure} and {destination}.
-    Consider the most common travel route between these locations.
-    Return ONLY a numeric value (no units, no explanations). If you can't estimate, return 0."""
-    
+    prompt = f"Estimate travel distance in kilometers between {departure} and {destination}. Return only a number (no text/units)."
     try:
-        response = get_ai_response(prompt, "You are a geography expert specializing in travel distances. Return only numbers.")
+        response = get_ai_response(prompt, "Geography expert. Return only numeric distance in km.")
         return float(response) if response and response.replace('.', '', 1).isdigit() else None
     except:
         return None
 
 def extract_campaign_details(user_input):
-    prompt = f"""Extract these fields from the input:
+    prompt = f"""Extract:
     - Campaign Name (text)
     - Duration (days, number)
     - Local Vendor Percentage (0-100)
     
     Input: {user_input}
-    Return as JSON with keys: name, duration, local_vendor_pct. 
-    If any field is missing, set to null."""
+    Return as JSON with keys: name, duration, local_vendor_pct. Missing = null."""
     
-    return json.loads(get_ai_response(prompt, "Extract data accurately. Return only JSON."))
+    try:
+        return json.loads(get_ai_response(prompt, "Extract data. Return only JSON."))
+    except:
+        return {}
 
 def extract_travel_details(user_input):
-    prompt = f"""Extract staff travel groups from input. Each group needs:
+    prompt = f"""Extract staff travel groups. Each needs:
     - staff_count (number)
     - departure (location)
     - destination (location)
@@ -118,31 +114,39 @@ def extract_travel_details(user_input):
     - accommodation (Budget, 3-star, 4-star, 5-star)
     
     Input: {user_input}
-    Return as JSON array of objects. If any field missing, set to null."""
+    Return as JSON array of objects. Missing = null."""
     
-    return json.loads(get_ai_response(prompt, "Extract travel data. Return only JSON array."))
+    try:
+        return json.loads(get_ai_response(prompt, "Extract travel data. Return only JSON array."))
+    except:
+        return []
 
 def extract_material_details(user_input):
-    prompt = f"""Extract campaign materials from input. Each material needs:
+    prompt = f"""Extract materials. Each needs:
     - type (choose from: {[m['name'] for m in PREDEFINED_MATERIALS]})
     - custom_name (if type is 'Other (Custom)')
     - quantity (number)
     
     Input: {user_input}
-    Return as JSON array of objects. If any field missing, set to null."""
+    Return as JSON array of objects. Missing = null."""
     
-    return json.loads(get_ai_response(prompt, "Extract material data. Return only JSON array."))
+    try:
+        return json.loads(get_ai_response(prompt, "Extract material data. Return only JSON array."))
+    except:
+        return []
 
 def extract_checks(user_input, criteria_type):
     criteria = GOVERNANCE_CRITERIA if criteria_type == "governance" else OPERATIONS_CRITERIA
-    prompt = f"""Evaluate which of these criteria are met (yes/no) from input:
+    prompt = f"""Evaluate which are met (yes/no) from input:
     {', '.join([f"{i+1}. {c}" for i, c in enumerate(criteria)])}
     
     Input: {user_input}
-    Return as JSON array of booleans (true=yes, false=no) in order. 
-    If uncertain, set to false."""
+    Return as JSON array of booleans (true=yes). Uncertain = false."""
     
-    return json.loads(get_ai_response(prompt, "Evaluate criteria. Return only JSON array."))
+    try:
+        return json.loads(get_ai_response(prompt, "Evaluate criteria. Return only JSON array."))
+    except:
+        return [False]*5
 
 # --- Calculation Functions ---
 def calculate_total_carbon_emission():
@@ -158,12 +162,11 @@ def calculate_total_carbon_emission():
     return round(total_emission, 1)
     
 def calculate_material_metrics():
-    total_impact, total_recyclable, total_qty, total_plastic = 0, 0, 0, 0
+    total_impact, total_recyclable, total_qty = 0, 0, 0
     for mat in st.session_state["campaign_data"]["Materials"]:
         qty = mat.get("quantity", 0)
         if qty <= 0: continue
         total_qty += qty
-        if mat.get("material_type") == "Plastic": total_plastic += qty
         
         if mat["type"] == "Other (Custom)":
             weight = mat.get("custom_weight", 5)
@@ -177,12 +180,12 @@ def calculate_material_metrics():
         if recyclable: total_recyclable += qty
     
     recyclable_rate = (total_recyclable / total_qty * 100) if total_qty > 0 else 100
-    return total_impact, round(recyclable_rate, 1), total_plastic
+    return total_impact, round(recyclable_rate, 1)
 
 def calculate_sustainability_scores():
     data = st.session_state["campaign_data"]
     total_carbon = calculate_total_carbon_emission()
-    total_mat_impact, recyclable_rate, _ = calculate_material_metrics()
+    total_mat_impact, recyclable_rate = calculate_material_metrics()
 
     # Environmental Impact (40 pts)
     travel_score = 20 if total_carbon <= 500 else 17 if 501<=total_carbon<=1000 else 14 if 1001<=total_carbon<=1500 else 11 if 1501<=total_carbon<=2000 else 8
@@ -213,7 +216,7 @@ def calculate_sustainability_scores():
 def start_conversation():
     st.session_state["conversation"].append({
         "role": "assistant",
-        "content": "👋 Welcome to the Sustainable Marketing Evaluator! Let's start with basics. Please share:\n- Campaign name\n- Duration (days)\n- Percentage of local vendors (0-100)"
+        "content": "👋 Welcome to the Sustainable Marketing Evaluator! Let's collect some info in 5 steps.\nStep 1: Please share:\n- Campaign name\n- Duration (days)\n- Percentage of local vendors (0-100)"
     })
     st.session_state["current_step"] = 1
     st.session_state["waiting_for_input"] = True
@@ -226,7 +229,6 @@ def process_step(step, user_input):
     if step == 1:  # Basic campaign info
         details = extract_campaign_details(user_input) if OPENAI_AVAILABLE else {}
         
-        # Validate and collect data
         missing = []
         if details.get("name"):
             data["Campaign Name"] = details["name"]
@@ -244,35 +246,31 @@ def process_step(step, user_input):
             missing.append("local vendor percentage (0-100)")
 
         if not missing:
-            response = "Thanks! Next, tell me about staff travel. For each group (teams from same origin), include:\n- Number of staff\n- Departure/destination locations\n- Travel mode (Air Economy, Train, Car, etc.)\n- Accommodation type (Budget, 3-star, 4-star, 5-star)\nI'll estimate distances automatically if you don't provide them!"
+            response = "Step 2: Staff travel details (per group):\n- Number of staff\n- Departure/destination locations\n- Travel mode (Air Economy, Train, etc.)\n- Accommodation (Budget, 3-star, etc.)\nI'll estimate distances automatically!"
             st.session_state["current_step"] = 2
         else:
-            response = f"Could you provide: {', '.join(missing)}?"
+            response = f"Please provide: {', '.join(missing)}"
 
-    elif step == 2:  # Staff travel info with distance estimation
+    elif step == 2:  # Staff travel info
         travel_groups = extract_travel_details(user_input) if OPENAI_AVAILABLE else []
         valid_groups = []
         estimation_notes = []
         
         for i, group in enumerate(travel_groups, 1):
-            # Check for required base fields
             if not all(k in group for k in ["staff_count", "departure", "destination", "travel_mode", "accommodation"]):
-                estimation_notes.append(f"Group {i} is missing basic information (staff count, locations, travel mode, or accommodation)")
+                estimation_notes.append(f"Group {i} missing: staff count, locations, travel mode, or accommodation")
                 continue
 
-            # Handle distance - use provided if available, estimate if missing
             distance = group.get("distance_km")
             if distance is None or not isinstance(distance, (int, float)) or distance <= 0:
-                # Attempt AI estimation
                 estimated = estimate_distance(group["departure"], group["destination"])
                 if estimated and estimated > 0:
                     distance = estimated
-                    estimation_notes.append(f"Estimated distance for Group {i} ({group['departure']} to {group['destination']}): {distance} km")
+                    estimation_notes.append(f"Group {i} distance estimated: {distance} km")
                 else:
-                    estimation_notes.append(f"Could not estimate distance for Group {i} - please provide it")
-                    continue  # Skip group if we can't get distance
+                    estimation_notes.append(f"Could not estimate Group {i} distance - please provide it")
+                    continue
             
-            # Add valid group
             valid_groups.append({
                 "Staff Count": int(group["staff_count"]),
                 "Departure": group["departure"],
@@ -286,11 +284,11 @@ def process_step(step, user_input):
             data["Staff Groups"] = valid_groups
             response = "Got it! "
             if estimation_notes:
-                response += "\n".join(estimation_notes) + "\n\n"
-            response += "Now materials. List each type with quantity. Options: Brochures, Flyers, Plastic Tote Bags, Cotton Tote Bags, Metal Badges, or Custom (specify name)."
+                response += "\n".join(estimation_notes) + "\n"
+            response += "Step 3: Materials (list types and quantities). Options:\nBrochures, Flyers, Plastic Tote Bags, Cotton Tote Bags, Metal Badges, or Custom (specify name)"
             st.session_state["current_step"] = 3
         else:
-            response = "I didn't get valid travel details. Please include for each group: staff count, departure, destination, travel mode, and accommodation."
+            response = "Please re-enter travel details with staff count, locations, travel mode, and accommodation"
 
     elif step == 3:  # Materials info
         materials = extract_material_details(user_input) if OPENAI_AVAILABLE else []
@@ -312,19 +310,19 @@ def process_step(step, user_input):
 
         if valid_materials:
             data["Materials"] = valid_materials
-            response = "Thanks! Now governance: Do you have these? (yes/no for each)\n1. Written sustainability goal\n2. Vendor contracts with sustainability clauses\n3. Eco-certified travel providers\n4. Certified material suppliers\n5. Planned post-campaign report"
+            response = "Step 4: Governance (yes/no for each)\n1. Written sustainability goal\n2. Vendor contracts with sustainability clauses\n3. Eco-certified travel providers\n4. Certified material suppliers\n5. Planned post-campaign report"
             st.session_state["current_step"] = 4
         else:
-            response = "Please list materials with types and quantities (e.g., '100 Brochures, 50 Cotton Tote Bags')."
+            response = "Please list materials with types and quantities (e.g., '100 Brochures, 50 Cotton Tote Bags')"
 
     elif step == 4:  # Governance checks
         checks = extract_checks(user_input, "governance") if OPENAI_AVAILABLE else [False]*5
         if len(checks) == 5:
             data["governance_checks"] = checks
-            response = "Last one! Operations: Do you have these? (yes/no)\n1. Campaign ≤3 days\n2. Digital alternatives for printing\n3. Consolidated staff travel\n4. Leftover materials recycled/donated\n5. Accommodation near venue"
+            response = "Step 5: Operations (yes/no for each)\n1. Campaign ≤3 days\n2. Digital alternatives for printing\n3. Consolidated staff travel\n4. Leftover materials recycled/donated\n5. Accommodation near venue"
             st.session_state["current_step"] = 5
         else:
-            response = "Please answer yes/no for all 5 governance criteria (e.g., 'yes,no,yes,yes,no')."
+            response = "Please answer yes/no for all 5 governance criteria (e.g., 'yes,no,yes,yes,no')"
 
     elif step == 5:  # Operations checks + Report
         checks = extract_checks(user_input, "operations") if OPENAI_AVAILABLE else [False]*5
@@ -335,56 +333,87 @@ def process_step(step, user_input):
             st.session_state["waiting_for_input"] = False
             generate_report()
         else:
-            response = "Please answer yes/no for all 5 operations criteria (e.g., 'yes,no,yes,yes,no')."
+            response = "Please answer yes/no for all 5 operations criteria (e.g., 'yes,no,yes,yes,no')"
 
     st.session_state["conversation"].append({"role": "assistant", "content": response})
 
 def generate_report():
     data = st.session_state["campaign_data"]
     total_carbon = calculate_total_carbon_emission()
-    total_mat_impact, recyclable_rate, _ = calculate_material_metrics()
+    total_mat_impact, recyclable_rate = calculate_material_metrics()
     scores = calculate_sustainability_scores()
     total_score = sum(scores.values())
     
-    # AI Recommendations
+    # Generate recommendations
+    recommendations = []
     if OPENAI_AVAILABLE:
-        prompt = f"""Recommend 3 sustainability improvements for {data['Campaign Name']} (Score: {total_score}/100). 
+        prompt = f"""Give 3 specific sustainability improvements for {data['Campaign Name']}.
         Weak areas: {[k for k, v in scores.items() if v < 10]}.
-        Metrics: {total_carbon}kg CO₂ | {recyclable_rate}% recyclable | {data['Local Vendor %']}% local vendors."""
-        data["ai_recommendations"] = get_ai_response(prompt).split("\n")[:3]
+        Metrics: {total_carbon}kg CO₂ | {recyclable_rate}% recyclable | {data['Local Vendor %']}% local vendors.
+        Format: 3 bullet points without introduction."""
+        ai_response = get_ai_response(prompt)
+        recommendations = [line.strip() for line in ai_response.split('\n') if line.strip()]
+        # Fallback for incomplete responses
+        while len(recommendations) < 3:
+            recommendations.append("Increase use of local vendors to reduce carbon footprint.")
+        recommendations = recommendations[:3]
+    else:
+        recommendations = [
+            "Consider using more recyclable materials to improve sustainability.",
+            "Opt for lower-emission travel options (e.g., train instead of air travel).",
+            "Develop a written sustainability goal to guide future improvements."
+        ]
     
-    # Report content
-    report = f"# 🌿 Sustainability Report: {data['Campaign Name']}\n\n"
+    # Build plain text report
+    report = []
+    report.append(f"Sustainability Report: {data['Campaign Name']}")
+    report.append("=" * (len(report[0])))
+    report.append("")
     
-    report += "## 📝 Overview\n"
-    report += f"- **Duration**: {data['Duration (days)']} days\n"
-    report += f"- **Total Staff**: {sum(g['Staff Count'] for g in data['Staff Groups'])}\n"
-    report += f"- **Local Vendors**: {data['Local Vendor %']}%\n\n"
+    # Overview
+    report.append("1. Overview")
+    report.append(f"- Duration: {data['Duration (days)']} days")
+    report.append(f"- Total Staff: {sum(g['Staff Count'] for g in data['Staff Groups'])}")
+    report.append(f"- Local Vendors: {data['Local Vendor %']}%")
+    report.append("")
     
-    report += "## 👥 Staff Travel & Carbon Footprint\n"
+    # Staff Travel
+    report.append("2. Staff Travel & Carbon Footprint")
     for i, group in enumerate(data['Staff Groups'], 1):
-        report += f"- Group {i}: {group['Staff Count']} people from {group['Departure']} to {group['Destination']} ({group['Travel Distance (km)']}km via {group['Travel Mode']})\n"
-    report += f"\n**Total Carbon Emission**: {total_carbon} kg CO₂\n\n"
+        report.append(f"- Group {i}: {group['Staff Count']} people from {group['Departure']} to {group['Destination']} "
+                     f"({group['Travel Distance (km)']}km via {group['Travel Mode']})")
+    report.append(f"- Total Carbon Emission: {total_carbon} kg CO₂")
+    report.append("")
     
-    report += "## 📦 Materials\n"
+    # Materials
+    report.append("3. Materials")
     for i, mat in enumerate(data['Materials'], 1):
         name = mat["custom_name"] if mat["type"] == "Other (Custom)" else mat["type"]
-        recyclable = "✅" if (mat.get("custom_recyclable") if mat["type"] == "Other (Custom)" else next((p["recyclable"] for p in PREDEFINED_MATERIALS if p["name"] == mat["type"]), False)) else "❌"
-        report += f"- {name}: {mat['quantity']} units ({recyclable} recyclable)\n"
-    report += f"- **Recyclability Rate**: {recyclable_rate}%\n\n"
+        recyclable = "✅" if (mat.get("custom_recyclable") if mat["type"] == "Other (Custom)" else 
+                            next((p["recyclable"] for p in PREDEFINED_MATERIALS if p["name"] == mat["type"]), False)) else "❌"
+        report.append(f"- {name}: {mat['quantity']} units ({recyclable} recyclable)")
+    report.append(f"- Recyclability Rate: {recyclable_rate}%")
+    report.append("")
     
-    report += "## 📊 Sustainability Scorecard\n"
-    report += f"- **Overall Score**: {total_score}/100\n"
+    # Scorecard
+    report.append("4. Sustainability Scorecard")
+    report.append(f"- Overall Score: {total_score}/100")
     for category, score in scores.items():
         max_score = 40 if category == "Environmental Impact" else 30 if category == "Social Responsibility" else 20 if category == "Governance" else 10
-        report += f"- {category}: {score}/{max_score}\n"
+        report.append(f"- {category}: {score}/{max_score}")
+    report.append("")
     
-    if data["ai_recommendations"]:
-        report += "\n## 💡 Recommendations\n"
-        for i, rec in enumerate(data["ai_recommendations"], 1):
-            report += f"- {i}. {rec}\n"
+    # Recommendations
+    report.append("5. Recommendations")
+    for i, rec in enumerate(recommendations, 1):
+        clean_rec = rec.lstrip("0123456789.- ").strip()
+        report.append(f"- {i}. {clean_rec}")
     
-    st.session_state["conversation"].append({"role": "assistant", "content": report})
+    st.session_state["report_text"] = "\n".join(report)
+    st.session_state["conversation"].append({
+        "role": "assistant",
+        "content": st.session_state["report_text"]
+    })
 
 # --- UI Rendering ---
 st.title("🌿 Sustainable Marketing Evaluator")
@@ -395,13 +424,28 @@ if not st.session_state["conversation"]:
 # Display conversation
 for message in st.session_state["conversation"]:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        st.text(message["content"])
 
-# Handle user input
+# Report download
+if st.session_state["current_step"] == 6 and st.session_state["report_text"]:
+    report_file = StringIO(st.session_state["report_text"])
+    st.download_button(
+        label="📥 Download Report",
+        data=report_file,
+        file_name=f"{st.session_state['campaign_data']['Campaign Name']}_sustainability_report.txt",
+        mime="text/plain"
+    )
+
+# Handle input
 if st.session_state["waiting_for_input"] and st.session_state["current_step"] < 6:
     user_input = st.chat_input("Enter your response here...")
     if user_input:
         process_step(st.session_state["current_step"], user_input)
         st.rerun()
 elif st.session_state["current_step"] == 6:
-    st.chat_input("Ask follow-up questions about your report...")
+    user_input = st.chat_input("Ask follow-up questions about your report...")
+    if user_input:
+        st.session_state["conversation"].append({"role": "user", "content": user_input})
+        response = get_ai_response(user_input, f"Answer questions about this report: {st.session_state['report_text']}")
+        st.session_state["conversation"].append({"role": "assistant", "content": response})
+        st.rerun()
