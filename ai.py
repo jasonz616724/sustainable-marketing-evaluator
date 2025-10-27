@@ -373,9 +373,23 @@ if uploaded_pdf:
 
 # 2. Basic Details
 st.sidebar.subheader("🎯 Campaign Details")
-campaign_name = st.sidebar.text_input("Campaign Name", st.session_state["campaign_data"]["Campaign Name"])
-duration = st.sidebar.slider("Duration (days)", 1, 30, st.session_state["campaign_data"]["Duration (days)"])
-
+# Increase the width of the text input by using a larger container or adjusting the layout
+campaign_name = st.sidebar.text_input(
+    "Campaign Name", 
+    st.session_state["campaign_data"]["Campaign Name"],
+    key="campaign_name_input"
+)
+# Add custom CSS to make the input wider (optional but effective)
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebar"] [data-testid="stTextInput"] input {
+        width: 100% !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 # 3. Local Vendors
 st.sidebar.subheader("🏘️ Local Vendors")
 local_vendor_pct = st.sidebar.slider("% Local Vendors", 0, 100, st.session_state["campaign_data"]["Local Vendor %"])
