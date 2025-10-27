@@ -5,59 +5,29 @@ import pdfkit
 import tempfile
 import os
 import fitz
-import requests  # For API calls
-from datetime import datetime
-import time
+import json
 from openai import OpenAI
 
-time.sleep(2)  # wait 2 seconds between calls
-
-# Initialize the OpenAI client with your API key
-client = OpenAI(
-    api_key=st.secrets.get("OPENAI_API_KEY")  # Use Streamlit secrets (never hardcode!)
-)
-
-def generate_ai_response(prompt):
-    """Generate a response from GPT-5-nano using OpenAI's API."""
-    try:
-        # Call the chat completions endpoint (correct method for chat models)
-        response = client.chat.completions.create(
-            model="gpt-5-nano",  # Your model name
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},  # System prompt
-                {"role": "user", "content": prompt}  # User input/prompt
-            ],
-            # Note: OpenAI does NOT support "store=True" – remove this parameter
-            temperature=0.7  # Optional: Controls randomness (0=deterministic, 1=creative)
-        )
-        # Extract the AI's response from the API result
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"AI Error: {str(e)}")
-        return "Failed to generate response."
-
-print(response.choices[0].message.content) ;
-
-
-
-
-
-# --- Page Config ---
+# --- Page Configuration ---
 st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
+plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
 
-# --- ChatGPT-5 API Configuration (No hardcoded key) ---
-AI_API_ENDPOINT = "https://api.openai.com/v1/chat/completions"  # Replace with your endpoint
-# API key fetched from Streamlit secrets (never hardcoded)
+# --- Initialize OpenAI Client ---
 try:
-    AI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    OPENAI_AVAILABLE = True
 except KeyError:
-    st.warning("API key not found in secrets. Some AI features may be limited.")
-    OPENAI_API_KEY = None
+    st.warning("⚠️ OPENAI_API_KEY not found in Streamlit Secrets. AI features disabled.")
+    OPENAI_AVAILABLE = False
+except Exception as e:
+    st.error(f"⚠️ OpenAI client error: {str(e)}")
+    OPENAI_AVAILABLE = False
 
-# --- Session State ---
+# --- Session State Initialization ---
 if "campaign_data" not in st.session_state:
     st.session_state["campaign_data"] = {
-        "Campaign Name": "Green Horizons Launch 2024: Sustainable Futures Summit",
+        "Campaign Name": "Green Horizons Launch 2024",
         "Duration (days)": 2,
         "Staff Groups": [
             {
@@ -75,10 +45,9 @@ if "campaign_data" not in st.session_state:
         ],
         "Local Vendor %": 70,
         "extracted_pdf_text": "",
-        "governance_checks": [False, False, False, False, False],
-        "operations_checks": [False, False, False, False, False],
+        "governance_checks": [False]*5,
+        "operations_checks": [False]*5,
         "ai_recommendations": [],
-        "ai_material_analysis": {}
     }
 if "staff_group_count" not in st.session_state:
     st.session_state["staff_group_count"] = len(st.session_state["campaign_data"]["Staff Groups"])
@@ -87,11 +56,8 @@ if "material_count" not in st.session_state:
 if "rerun_trigger" not in st.session_state:
     st.session_state["rerun_trigger"] = False
 
-# --- Constants (Rulebook Aligned) ---
-EMISSION_FACTORS = {
-    "Air": 0.25, "Train": 0.06, "Car": 0.17, "Bus": 0.08, "Other": 0.12
-}
-
+# --- Constants ---
+EMISSION_FACTORS = {"Air": 0.25, "Train": 0.06, "Car": 0.17, "Bus": 0.08, "Other": 0.12}
 PREDEFINED_MATERIALS = [
     {"name": "Brochures", "type": "Paper", "weight": 3, "recyclable": True},
     {"name": "Flyers", "type": "Paper", "weight": 3, "recyclable": True},
@@ -100,7 +66,6 @@ PREDEFINED_MATERIALS = [
     {"name": "Metal Badges", "type": "Metal", "weight": 5, "recyclable": True},
     {"name": "Other (Custom)"}
 ]
-
 GOVERNANCE_CRITERIA = [
     "Written sustainability goal (e.g., 'Reduce plastic by 50%')",
     "Vendor contracts with sustainability clauses",
@@ -116,430 +81,326 @@ OPERATIONS_CRITERIA = [
     "Accommodation near venue (walking/transit)"
 ]
 
-# --- AI Helper Functions (Secure API Calls) ---
-def ai_api_call(prompt, system_message="You are a sustainability analyst for marketing campaigns."):
-    """Secure API call to ChatGPT-5 (uses secrets for key)."""
-    if not AI_API_KEY:
-        return {"choices": [{"message": {"content": "AI features require an API key (add to secrets)."}}]}
+# --- Core AI Function ---
+def get_ai_response(prompt, system_msg="You are a sustainability analyst. Be concise."):
+    if not OPENAI_AVAILABLE:
+        return "❌ AI requires OPENAI_API_KEY in secrets."
     
     try:
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {AI_API_KEY}"  # Key from secrets, not hardcoded
-        }
-        payload = {
-            "model": "gpt-5",  # Replace with your model name
-            "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": prompt}
-            ]
-        }
-        response = requests.post(AI_API_ENDPOINT, headers=headers, json=payload, timeout=10)
-        response.raise_for_status()  # Raise error for 4xx/5xx responses
-        return response.json()
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
+            temperature=0.6,
+            timeout=15
+        )
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        st.error(f"AI API Error: {str(e)}")
-        return {"choices": [{"message": {"content": "Failed to connect to AI service."}}]}
-
-# --- Core AI-Powered Features ---
-def ai_estimate_distance(departure, destination):
-    """AI-powered distance estimation between cities."""
-    if not departure or not destination or departure == destination:
-        return 0
-    prompt = f"""Estimate the distance in kilometers between {departure} and {destination} for a marketing campaign. 
-    Return ONLY the numeric distance (no extra text). Example: 870"""
-    ######response = ai_api_call(prompt)
-    try:
-        return float(response["choices"][0]["message"]["content"].strip())
-    except:
-        st.warning("AI could not estimate distance. Using manual input.")
-        return None
-
-def ai_analyze_pdf(pdf_text):
-    """AI extracts campaign details from PDF to auto-populate forms."""
-    if not pdf_text:
-        return {}
-    prompt = f"""Analyze this marketing campaign PDF text and extract:
-    - Campaign duration (days)
-    - Number of staff
-    - Materials used (name and quantity)
-    - Local vendor percentage
-    - Travel cities (departure/destination)
-    
-    Text: {pdf_text[:2000]}  # Truncated for token efficiency
-    
-    Return as a JSON with keys: duration, staff_count, materials, local_vendor_pct, travel_cities."""
-    #####response = ai_api_call(prompt)
-    try:
-        import json
-        return json.loads(response["choices"][0]["message"]["content"])
-    except:
-        st.warning("AI could not parse PDF. Use manual input.")
-        return {}
-
-def ai_generate_recommendations():
-    """Generate sustainability recommendations using GPT-5-nano."""
-    data = st.session_state["campaign_data"]
-    scores = calculate_scores()
-    
-    # Build a prompt with campaign details
-    prompt = f"""Generate 3 sustainability recommendations for this marketing campaign:
-    - Total score: {sum(scores.values())}/100
-    - Carbon emissions: {calculate_total_carbon()} kg
-    - Materials used: {[m['type'] for m in data['Materials']]}
-    - Local vendors: {data['Local Vendor %']}%
-    
-    Focus on fixing low-scoring areas and reference these impact weights:
-    - Plastic materials: weight 8
-    - Cotton materials: weight 2
-    - Paper materials: weight 3
-    """
-    
-    # Call the corrected AI function
-    ai_response = generate_ai_response(prompt)
-    
-    # Format the response into a list of recommendations
-    return [rec.strip() for rec in ai_response.split("-") if rec.strip()]
-    
-def ai_estimate_material_impact(material_name):
-    """AI estimates impact weight/recyclability for custom materials (rulebook-aligned)."""
-    if not material_name:
-        return (5, False)  # Default
-    prompt = f"""Estimate the sustainability impact of "{material_name}" for a marketing campaign using this rulebook:
-    - Impact weight scale: 1 (low, e.g., biodegradable) to 10 (high, e.g., non-recyclable plastic)
-    - Recyclable: Yes/No
-    
-    Examples from rulebook:
-    - Cotton tote bags: weight 2, recyclable=Yes
-    - Plastic badges: weight 8, recyclable=No
-    
-    Return ONLY as "weight: X, recyclable: Y" (no extra text)."""
-    ####response = ai_api_call(prompt)
-    try:
-        content = response["choices"][0]["message"]["content"]
-        weight = int(content.split("weight: ")[1].split(",")[0])
-        recyclable = "Yes" in content.split("recyclable: ")[1]
-        return (weight, recyclable)
-    except:
-        st.warning(f"AI could not estimate {material_name}. Using default.")
-        return (5, False)
+        st.error(f"⚠️ AI error: {str(e)}")
+        return "❌ AI response failed. Try again."
 
 # --- Helper Functions ---
-def update_staff_count(change):
-    if change == "add":
+def update_staff_count(change_type):
+    if change_type == "add":
         st.session_state["staff_group_count"] += 1
-    elif change == "remove" and st.session_state["staff_group_count"] > 1:
+    elif change_type == "remove" and st.session_state["staff_group_count"] > 1:
         st.session_state["staff_group_count"] -= 1
     st.session_state["rerun_trigger"] = True
 
-def update_material_count(change):
-    if change == "add":
+def update_material_count(change_type):
+    if change_type == "add":
         st.session_state["material_count"] += 1
-    elif change == "remove" and st.session_state["material_count"] > 1:
+    elif change_type == "remove" and st.session_state["material_count"] > 1:
         st.session_state["material_count"] -= 1
     st.session_state["rerun_trigger"] = True
 
-def extract_text_from_pdf(file):
+def extract_pdf_text(uploaded_file):
     try:
-        with fitz.open(stream=file.read(), filetype="pdf") as doc:
-            return "\n\n".join([page.get_text().strip() for page in doc])
+        with fitz.open(stream=uploaded_file.read(), filetype="pdf") as pdf_doc:
+            return "\n\n".join([page.get_text().strip() for page in pdf_doc])
     except Exception as e:
-        st.error(f"PDF Extraction Error: {str(e)}")
+        st.error(f"⚠️ PDF extraction failed: {str(e)}")
         return ""
 
+# --- AI-Enhanced Features ---
+def ai_estimate_travel_distance(departure, destination):
+    if not departure or not destination or departure == destination:
+        return 0
+    
+    prompt = f"Estimate km between {departure} and {destination} (marketing travel). Return only a number."
+    response = get_ai_response(prompt, "Geography expert: Return only numeric km.")
+    
+    try:
+        return float(response)
+    except:
+        st.warning(f"⚠️ AI distance failed (response: {response[:50]}...). Enter manually.")
+        return None
+
+def ai_extract_pdf_data(pdf_text):
+    if not pdf_text:
+        return {}
+    
+    prompt = f"Extract from PDF text: {pdf_text[:2000]}\nReturn JSON with: duration (days), staff_count, materials (name/quantity), local_vendor_pct, travel_cities (departure/destination). Use null if missing."
+    response = get_ai_response(prompt, "Data extractor: Return only valid JSON.")
+    try:
+        return json.loads(response)
+    except:
+        st.warning(f"⚠️ AI PDF parse failed (response: {response[:100]}...). Enter manually.")
+        return {}
+
+def ai_generate_sustainability_tips():
+    data = st.session_state["campaign_data"]
+    scores = calculate_sustainability_scores()
+    total_carbon = calculate_total_carbon_emission()
+    _, recyclable_rate, _ = calculate_material_metrics()
+    
+    prompt = f"3 actionable tips for {data['Campaign Name']}:\nScore: {sum(scores.values())}/100, CO₂: {total_carbon}kg, Recyclable: {recyclable_rate}%, Local Vendors: {data['Local Vendor %']}%\nLow scores: {[k for k, v in scores.items() if v < 10]}\nStart with verbs (e.g., 'Switch...')."
+    response = get_ai_response(prompt)
+    return [tip.strip() for tip in response.split("-") if tip.strip() and not tip.strip().isdigit()]
+
+def ai_analyze_custom_material(material_name):
+    if not material_name:
+        return (5, False)
+    
+    prompt = f"Analyze '{material_name}': 1. Impact weight (1-10; cotton=2, plastic=8) 2. Recyclable (Yes/No). Return 'weight: X, recyclable: Y'."
+    response = get_ai_response(prompt, "Materials expert: Return only specified format.")
+    try:
+        weight = int(response.split("weight: ")[1].split(",")[0].strip())
+        recyclable = "Yes" in response.split("recyclable: ")[1]
+        return (max(1, min(10, weight)), recyclable)
+    except:
+        st.warning(f"⚠️ AI material analysis failed. Using defaults (5, False).")
+        return (5, False)
 # --- Calculation Functions ---
-def calculate_total_carbon():
+def calculate_total_carbon_emission():
     total = 0
     for group in st.session_state["campaign_data"]["Staff Groups"]:
-        if group["Travel Distance (km)"] <= 0:
+        distance = group["Travel Distance (km)"]
+        if distance <= 0:
             continue
-        emission_factor = EMISSION_FACTORS[group["Travel Mode"]]
-        total += group["Travel Distance (km)"] * emission_factor * group["Staff Count"]
-    return total
+        factor = EMISSION_FACTORS.get(group["Travel Mode"], 0.12)
+        total += distance * factor * group["Staff Count"]
+    return round(total, 1)
 
 def calculate_material_metrics():
-    total_impact = 0
-    total_recyclable = 0
-    total_quantity = 0
-    total_plastic = 0
-
-    for m in st.session_state["campaign_data"]["Materials"]:
-        qty = m["quantity"]
+    total_impact, total_recyclable, total_qty, total_plastic = 0, 0, 0, 0
+    for mat in st.session_state["campaign_data"]["Materials"]:
+        qty = mat["quantity"]
         if qty <= 0:
             continue
-        total_quantity += qty
-        if m["material_type"] == "Plastic":
+        total_qty += qty
+        if mat["material_type"] == "Plastic":
             total_plastic += qty
-
-        if m["type"] == "Other (Custom)":
-            weight = m["custom_weight"] if m["custom_weight"] != 0 else 5
-            recyclable = m["custom_recyclable"]
+        
+        if mat["type"] == "Other (Custom)":
+            weight = mat["custom_weight"] if mat["custom_weight"] != 0 else 5
+            recyclable = mat["custom_recyclable"]
         else:
-            matches = [p for p in PREDEFINED_MATERIALS if p["name"] == m["type"]]
-            weight = matches[0]["weight"] if matches else 5
-            recyclable = matches[0]["recyclable"] if matches else False
-
+            match = next((m for m in PREDEFINED_MATERIALS if m["name"] == mat["type"]), None)
+            weight = match["weight"] if match else 5
+            recyclable = match["recyclable"] if match else False
+        
         total_impact += (qty // 100) * weight
         if recyclable:
             total_recyclable += qty
+    
+    recyclable_rate = (total_recyclable / total_qty * 100) if total_qty > 0 else 100
+    return total_impact, round(recyclable_rate, 1), total_plastic
 
-    recyclable_rate = (total_recyclable / total_quantity * 100) if total_quantity > 0 else 100
-    return total_impact, recyclable_rate, total_plastic
-
-def calculate_scores():
+def calculate_sustainability_scores():
     data = st.session_state["campaign_data"]
-    total_carbon = calculate_total_carbon()
-    total_material_impact, recyclable_rate, _ = calculate_material_metrics()
+    total_carbon = calculate_total_carbon_emission()
+    total_mat_impact, recyclable_rate, _ = calculate_material_metrics()
 
-    # 1. Environmental (40 points)
-    travel_score = 20 if total_carbon <= 500 else 17 if 501 <= total_carbon <= 1000 else 14 if 1001 <= total_carbon <= 1500 else 11 if 1501 <= total_carbon <= 2000 else 8
-    material_penalty = min(10, total_material_impact // 5)
-    recyclable_bonus = 5 if recyclable_rate >= 70 else 2 if 30 <= recyclable_rate < 70 else 0
-    material_score = max(0, 20 - material_penalty + recyclable_bonus)
-    environmental_score = travel_score + material_score
+    # Environmental Impact (40 pts)
+    travel_score = 20 if total_carbon <= 500 else 17 if 501<=total_carbon<=1000 else 14 if 1001<=total_carbon<=1500 else 11 if 1501<=total_carbon<=2000 else 8
+    mat_penalty = min(10, total_mat_impact // 5)
+    recyclable_bonus = 5 if recyclable_rate >=70 else 2 if 30<=recyclable_rate<70 else 0
+    env_score = travel_score + max(0, 20 - mat_penalty + recyclable_bonus)
 
-    # 2. Social (30 points)
+    # Social Responsibility (30 pts)
     local_score = min(15, round(data["Local Vendor %"] / 100 * 15))
-    total_acc_score = 0
-    total_staff = sum(group["Staff Count"] for group in data["Staff Groups"])
-    for group in data["Staff Groups"]:
-        acc_score = 15 if group["Accommodation"] in ["Budget", "3-star"] else 10 if group["Accommodation"] == "4-star" else 5
-        total_acc_score += acc_score * group["Staff Count"]
-    accommodation_score = total_acc_score // total_staff if total_staff > 0 else 0
-    social_score = local_score + accommodation_score
+    total_staff = sum(g["Staff Count"] for g in data["Staff Groups"])
+    acc_score_map = {"Budget":15, "3-star":15, "4-star":10, "5-star":5}
+    total_acc_score = sum(acc_score_map[g["Accommodation"]] * g["Staff Count"] for g in data["Staff Groups"])
+    acc_score = total_acc_score // total_staff if total_staff >0 else 0
+    social_score = local_score + acc_score
 
-    # 3. Governance (20) + 4. Operations (10)
-    governance_score = sum(data["governance_checks"]) * 4
-    operations_score = sum(data["operations_checks"]) * 2
+    # Governance (20 pts) + Operations (10 pts)
+    gov_score = sum(data["governance_checks"]) * 4
+    ops_score = sum(data["operations_checks"]) * 2
 
     return {
-        "Environmental Impact": environmental_score,
+        "Environmental Impact": env_score,
         "Social Responsibility": social_score,
-        "Governance": governance_score,
-        "Operations": operations_score
+        "Governance": gov_score,
+        "Operations": ops_score
     }
 
-# --- Sidebar ---
+# --- Sidebar UI ---
 st.sidebar.header("📋 Campaign Setup")
 
-# 1. AI-Enhanced PDF Upload
+# 1. PDF Upload
 st.sidebar.subheader("📄 Marketing Plan (AI Analysis)")
-uploaded_pdf = st.sidebar.file_uploader("Upload PDF for AI extraction", type="pdf")
+uploaded_pdf = st.sidebar.file_uploader("Upload PDF for AI Extraction", type="pdf")
 if uploaded_pdf:
-    with st.spinner("AI is analyzing PDF..."):
-        pdf_text = extract_text_from_pdf(uploaded_pdf)
+    with st.spinner("🔍 Analyzing PDF..."):
+        pdf_text = extract_pdf_text(uploaded_pdf)
         st.session_state["campaign_data"]["extracted_pdf_text"] = pdf_text
-        with st.sidebar.expander("View Extracted Text"):
-            st.text_area("", pdf_text, height=150)
         
-        # Auto-populate form with AI analysis
-        pdf_analysis = ai_analyze_pdf(pdf_text)
-        if pdf_analysis:
-            st.sidebar.success("AI populated form fields from PDF!")
-            if "duration" in pdf_analysis:
-                st.session_state["campaign_data"]["Duration (days)"] = pdf_analysis["duration"]
-            if "local_vendor_pct" in pdf_analysis:
-                st.session_state["campaign_data"]["Local Vendor %"] = pdf_analysis["local_vendor_pct"]
+        with st.sidebar.expander("View Extracted Text", False):
+            st.text_area("Content", pdf_text, 150, disabled=True)
+        
+        if OPENAI_AVAILABLE:
+            pdf_data = ai_extract_pdf_data(pdf_text)
+            if pdf_data:
+                st.sidebar.success("✅ AI populated form!")
+                if "duration" in pdf_data and pdf_data["duration"]:
+                    st.session_state["campaign_data"]["Duration (days)"] = pdf_data["duration"]
+                if "local_vendor_pct" in pdf_data and pdf_data["local_vendor_pct"]:
+                    st.session_state["campaign_data"]["Local Vendor %"] = pdf_data["local_vendor_pct"]
 
-# 2. Basic Info
+# 2. Basic Details
 st.sidebar.subheader("🎯 Campaign Details")
-campaign_name = st.sidebar.text_input(
-    "Campaign Name",
-    st.session_state["campaign_data"]["Campaign Name"],
-    placeholder="Enter full campaign name",
-    label_visibility="collapsed"
-)
-st.sidebar.text("Campaign Name")
-duration = st.sidebar.slider(
-    "Duration (days)",
-    1, 30,
-    st.session_state["campaign_data"]["Duration (days)"]
-)
+campaign_name = st.sidebar.text_input("Campaign Name", st.session_state["campaign_data"]["Campaign Name"])
+duration = st.sidebar.slider("Duration (days)", 1, 30, st.session_state["campaign_data"]["Duration (days)"])
 
 # 3. Local Vendors
-st.sidebar.subheader("🏘️ Local Vendor Usage")
-local_vendor_pct = st.sidebar.slider(
-    "% of vendors that are local (0-100)",
-    0, 100,
-    st.session_state["campaign_data"]["Local Vendor %"]
-)
+st.sidebar.subheader("🏘️ Local Vendors")
+local_vendor_pct = st.sidebar.slider("% Local Vendors", 0, 100, st.session_state["campaign_data"]["Local Vendor %"])
 
-# 4. Staff Groups + AI Distance Estimation
+# 4. Staff Travel
 st.sidebar.subheader("👥 Staff Travel Groups")
 col_add_staff, col_remove_staff = st.sidebar.columns(2)
 with col_add_staff:
-    if st.button("➕ Add Staff Group"):
+    if st.button("➕ Add Group", "add_staff"):
         update_staff_count("add")
 with col_remove_staff:
-    if st.button("➖ Remove Last Group"):
+    if st.button("➖ Remove Group", "remove_staff"):
         update_staff_count("remove")
 
 staff_groups = []
 for i in range(st.session_state["staff_group_count"]):
     st.sidebar.markdown(f"**Group {i+1}**")
-    default_data = st.session_state["campaign_data"]["Staff Groups"][i] if i < len(st.session_state["campaign_data"]["Staff Groups"]) else {
+    default = st.session_state["campaign_data"]["Staff Groups"][i] if i < len(st.session_state["campaign_data"]["Staff Groups"]) else {
         "Staff Count": 5, "Departure": "City A", "Destination": "City B",
         "Travel Distance (km)": 100, "Travel Mode": "Car", "Accommodation": "3-star"
     }
 
-    staff_count = st.sidebar.number_input(
-        f"Staff Count", min_value=1, value=default_data["Staff Count"], key=f"staff_{i}_count"
-    )
-    departure = st.sidebar.text_input(
-        f"Departure City", default_data["Departure"], key=f"staff_{i}_departure"
-    )
-    destination = st.sidebar.text_input(
-        f"Destination City", default_data["Destination"], key=f"staff_{i}_dest"
-    )
-
-    # AI Distance Estimation
+    staff_count = st.sidebar.number_input(f"Staff Count", 1, value=default["Staff Count"], key=f"staff_{i}_count")
+    departure = st.sidebar.text_input(f"Departure", default["Departure"], key=f"staff_{i}_dep")
+    destination = st.sidebar.text_input(f"Destination", default["Destination"], key=f"staff_{i}_dest")
+    
     col_dist, col_btn = st.sidebar.columns([3, 2])
     with col_dist:
-        travel_distance = st.sidebar.number_input(
-            f"Distance (km)", min_value=0, value=default_data["Travel Distance (km)"], key=f"staff_{i}_dist"
-        )
+        travel_dist = st.sidebar.number_input(f"Distance (km)", 0, value=default["Travel Distance (km)"], key=f"staff_{i}_dist")
     with col_btn:
-        if st.sidebar.button("🤖 AI Estimate", key=f"dist_btn_{i}"):
-            with st.spinner("AI calculating distance..."):
-                estimated = ai_estimate_distance(departure, destination)
+        if st.button("🤖 AI Estimate", key=f"staff_ai_{i}") and OPENAI_AVAILABLE:
+            with st.spinner("Estimating..."):
+                estimated = ai_estimate_travel_distance(departure, destination)
                 if estimated:
-                    travel_distance = estimated
-                    st.sidebar.success(f"AI Estimate: {estimated} km")
+                    travel_dist = estimated
+                    st.sidebar.success(f"Estimated: {estimated} km")
 
-    travel_mode = st.sidebar.selectbox(
-        f"Travel Mode", ["Air", "Train", "Car", "Bus", "Other"],
-        index=["Air", "Train", "Car", "Bus", "Other"].index(default_data["Travel Mode"]),
-        key=f"staff_{i}_mode"
-    )
-    accommodation = st.sidebar.selectbox(
-        f"Accommodation", ["Budget", "3-star", "4-star", "5-star"],
-        index=["Budget", "3-star", "4-star", "5-star"].index(default_data["Accommodation"]),
-        key=f"staff_{i}_acc"
-    )
+    travel_mode = st.sidebar.selectbox(f"Travel Mode", ["Air", "Train", "Car", "Bus", "Other"], 
+                                      ["Air", "Train", "Car", "Bus", "Other"].index(default["Travel Mode"]), 
+                                      key=f"staff_{i}_mode")
+    accommodation = st.sidebar.selectbox(f"Accommodation", ["Budget", "3-star", "4-star", "5-star"], 
+                                        ["Budget", "3-star", "4-star", "5-star"].index(default["Accommodation"]), 
+                                        key=f"staff_{i}_acc")
 
     staff_groups.append({
         "Staff Count": staff_count, "Departure": departure, "Destination": destination,
-        "Travel Distance (km)": travel_distance, "Travel Mode": travel_mode, "Accommodation": accommodation
+        "Travel Distance (km)": travel_dist, "Travel Mode": travel_mode, "Accommodation": accommodation
     })
 
-# 5. Materials + AI Custom Material Analysis
+# 5. Materials
 st.sidebar.subheader("📦 Materials")
 col_add_mat, col_remove_mat = st.sidebar.columns(2)
 with col_add_mat:
-    if st.button("➕ Add Material"):
+    if st.button("➕ Add Material", "add_mat"):
         update_material_count("add")
 with col_remove_mat:
-    if st.button("➖ Remove Last Material"):
+    if st.button("➖ Remove Material", "remove_mat"):
         update_material_count("remove")
 
 materials = []
 for i in range(st.session_state["material_count"]):
-    default_mat = st.session_state["campaign_data"]["Materials"][i] if i < len(st.session_state["campaign_data"]["Materials"]) else {
+    default = st.session_state["campaign_data"]["Materials"][i] if i < len(st.session_state["campaign_data"]["Materials"]) else {
         "type": "Brochures", "quantity": 1000, "material_type": "Paper",
         "custom_name": "", "custom_weight": 3, "custom_recyclable": True
     }
 
-    mat_type_options = [m["name"] for m in PREDEFINED_MATERIALS]
-    try:
-        default_index = mat_type_options.index(default_mat["type"])
-    except ValueError:
-        default_index = 0
+    mat_types = [m["name"] for m in PREDEFINED_MATERIALS]
+    mat_type = st.sidebar.selectbox(f"Material {i+1}", mat_types, 
+                                   mat_types.index(default["type"]) if default["type"] in mat_types else 0, 
+                                   key=f"mat_{i}_type")
+    quantity = st.sidebar.number_input(f"Quantity", 0, value=default["quantity"], key=f"mat_{i}_qty")
 
-    mat_type = st.sidebar.selectbox(
-        f"Material {i+1}", mat_type_options, index=default_index, key=f"mat_{i}_type"
-    )
-
-    quantity = st.sidebar.number_input(
-        f"Quantity", min_value=0, value=default_mat["quantity"], key=f"mat_{i}_qty"
-    )
-
-    custom_name = ""
-    custom_weight = 0
-    custom_recyclable = False
-    material_type = "Custom"
-
+    custom_name, custom_weight, custom_recyclable, material_type = "", 0, False, "Custom"
     if mat_type == "Other (Custom)":
-        custom_name = st.sidebar.text_input(
-            "Custom Material Name", default_mat["custom_name"], key=f"mat_{i}_custom_name"
-        )
-        # AI Impact Estimation for Custom Materials
-        if st.sidebar.button("🤖 AI Estimate Impact", key=f"mat_ai_{i}") and custom_name:
-            with st.spinner("AI analyzing material..."):
-                weight, recyclable = ai_estimate_material_impact(custom_name)
-                custom_weight = weight
-                custom_recyclable = recyclable
-                st.sidebar.success(f"AI: Weight={weight}, Recyclable={recyclable}")
+        custom_name = st.sidebar.text_input("Custom Name", default["custom_name"], key=f"mat_{i}_custom")
+        if st.sidebar.button("🤖 AI Impact", key=f"mat_ai_{i}") and custom_name and OPENAI_AVAILABLE:
+            with st.spinner("Analyzing..."):
+                weight, recyclable = ai_analyze_custom_material(custom_name)
+                custom_weight, custom_recyclable = weight, recyclable
+                st.sidebar.success(f"Weight: {weight}, Recyclable: {recyclable}")
         else:
-            custom_weight = default_mat["custom_weight"]
-            custom_recyclable = default_mat["custom_recyclable"]
+            custom_weight, custom_recyclable = default["custom_weight"], default["custom_recyclable"]
     else:
-        for m in PREDEFINED_MATERIALS:
-            if m["name"] == mat_type:
-                material_type = m["type"]
-                break
+        material_type = next((m["type"] for m in PREDEFINED_MATERIALS if m["name"] == mat_type), "Paper")
 
     materials.append({
         "type": mat_type, "quantity": quantity, "material_type": material_type,
         "custom_name": custom_name, "custom_weight": custom_weight, "custom_recyclable": custom_recyclable
     })
 
-# 6. Governance & Operations (Polished)
+# 6. Governance & Operations Checks
 st.sidebar.subheader("📋 Governance Standards")
-gov_checks = []
-for i, criteria in enumerate(GOVERNANCE_CRITERIA):
-    with st.sidebar.expander(criteria, expanded=st.session_state["campaign_data"]["governance_checks"][i]):
-        checked = st.checkbox("Fulfills criterion", 
-                             value=st.session_state["campaign_data"]["governance_checks"][i],
-                             key=f"gov_{i}")
-        gov_checks.append(checked)
+gov_checks = [st.sidebar.checkbox(c, st.session_state["campaign_data"]["governance_checks"][i], key=f"gov_{i}") 
+             for i, c in enumerate(GOVERNANCE_CRITERIA)]
 
 st.sidebar.subheader("⚙️ Operational Efficiency")
-ops_checks = []
-for i, criteria in enumerate(OPERATIONS_CRITERIA):
-    with st.sidebar.expander(criteria, expanded=st.session_state["campaign_data"]["operations_checks"][i]):
-        checked = st.checkbox("Fulfills criterion", 
-                             value=st.session_state["campaign_data"]["operations_checks"][i],
-                             key=f"ops_{i}")
-        ops_checks.append(checked)
+ops_checks = [st.sidebar.checkbox(c, st.session_state["campaign_data"]["operations_checks"][i], key=f"ops_{i}") 
+             for i, c in enumerate(OPERATIONS_CRITERIA)]
 
 # Save Button
-if st.sidebar.button("💾 Save All Details", use_container_width=True):
+if st.sidebar.button("💾 Save Details", use_container_width=True):
     st.session_state["campaign_data"].update({
         "Campaign Name": campaign_name, "Duration (days)": duration,
         "Staff Groups": staff_groups, "Materials": materials,
         "Local Vendor %": local_vendor_pct,
         "governance_checks": gov_checks, "operations_checks": ops_checks
     })
-    st.sidebar.success("✅ Details saved!")
+    st.sidebar.success("✅ Saved!")
 
-# --- Rerun Handling ---
+# --- Rerun Trigger ---
 if st.session_state["rerun_trigger"]:
     st.session_state["rerun_trigger"] = False
     st.rerun()
 
-# --- Dashboard ---
+# --- Main Dashboard ---
 data = st.session_state["campaign_data"]
-total_carbon = calculate_total_carbon()
-total_material_impact, recyclable_rate, total_plastic = calculate_material_metrics()
-scores = calculate_scores()
+total_carbon = calculate_total_carbon_emission()
+total_mat_impact, recyclable_rate, _ = calculate_material_metrics()
+scores = calculate_sustainability_scores()
 total_score = sum(scores.values())
 
 st.title("🌿 Sustainable Marketing Evaluator")
 
-# 1. Campaign Summary
+# 1. Overview
 st.subheader("📝 Campaign Overview")
 col1, col2, col3 = st.columns(3)
-with col1: st.metric("Campaign Name", data["Campaign Name"])
+with col1: st.metric("Name", data["Campaign Name"])
 with col2: st.metric("Duration", f"{data['Duration (days)']} days")
 with col3: st.metric("Total Staff", sum(g["Staff Count"] for g in data["Staff Groups"]))
 
-# 2. Staff & Travel
+# 2. Staff Travel
 st.subheader("👥 Staff Travel Details")
 st.dataframe(pd.DataFrame(data["Staff Groups"]), use_container_width=True)
 
 # 3. Carbon Footprint
 st.subheader("🚨 Carbon Footprint")
-st.metric("Total CO₂ Emissions", f"{total_carbon:.0f} kg")
+st.metric("Total CO₂ Emissions", f"{total_carbon} kg")
 fig, ax = plt.subplots(figsize=(8, 4))
 ax.bar(["Your Campaign", "Industry Benchmark"], [total_carbon, 2000], color=["#FF6B6B", "#4ECDC4"])
 ax.set_ylabel("CO₂ (kg)")
@@ -552,17 +413,14 @@ if any(m["quantity"] > 0 for m in data["Materials"]):
     for m in data["Materials"]:
         if m["quantity"] <= 0: continue
         name = m["custom_name"] if m["type"] == "Other (Custom)" else m["type"]
-        if m["type"] == "Other (Custom)":
-            recyclable = m["custom_recyclable"]
-        else:
-            matches = [p for p in PREDEFINED_MATERIALS if p["name"] == m["type"]]
-            recyclable = matches[0]["recyclable"] if matches else False
+        recyclable = m["custom_recyclable"] if m["type"] == "Other (Custom)" else next(
+            (p["recyclable"] for p in PREDEFINED_MATERIALS if p["name"] == m["type"]), False)
         mat_data.append({
             "Material": name, "Quantity": m["quantity"], 
             "Type": m["material_type"], "Recyclable": "✅" if recyclable else "❌"
         })
     st.dataframe(pd.DataFrame(mat_data), use_container_width=True)
-    st.metric("Recyclability Rate", f"{recyclable_rate:.1f}%")
+    st.metric("Recyclability Rate", f"{recyclable_rate}%")
 
 # 5. Scorecard
 st.subheader("📊 Sustainability Scorecard")
@@ -573,37 +431,26 @@ ax.set_ylim(0, 40)
 st.pyplot(fig)
 
 # 6. AI Recommendations
-st.subheader("💡 AI-Powered Recommendations")
-if st.button("Generate AI Insights", use_container_width=True):
-    with st.spinner("AI is generating tailored recommendations..."):
-        st.session_state["campaign_data"]["ai_recommendations"] = ai_generate_recommendations()
+st.subheader("💡 AI Recommendations")
+if st.button("Generate AI Insights", use_container_width=True) and OPENAI_AVAILABLE:
+    with st.spinner("Generating insights..."):
+        st.session_state["campaign_data"]["ai_recommendations"] = ai_generate_sustainability_tips()
 
 if st.session_state["campaign_data"]["ai_recommendations"]:
     for i, rec in enumerate(st.session_state["campaign_data"]["ai_recommendations"], 1):
         st.write(f"{i}. {rec}")
 
-# 7. AI-Enhanced PDF Export
-st.subheader("📄 Export AI-Generated Report")
+# 7. PDF Export
+st.subheader("📄 Export Report")
 if st.button("Generate PDF Report", use_container_width=True):
     try:
-        # AI-enhanced report content
-        report_prompt = f"""Generate a professional sustainability report for:
-        - Campaign: {data['Campaign Name']}
-        - Score: {total_score}/100
-        - Key metrics: {total_carbon} kg CO₂, {recyclable_rate}% recyclability
-        - Recommendations: {st.session_state['campaign_data']['ai_recommendations']}
-        
-        Format: Title, Executive Summary, Metrics Table, Recommendations, Next Steps."""
-        report_content = ai_api_call(report_prompt)["choices"][0]["message"]["content"]
+        report_prompt = f"Create a professional sustainability report for {data['Campaign Name']} with:\n- Score: {total_score}/100\n- Metrics: {total_carbon}kg CO₂, {recyclable_rate}% recyclable\n- Recommendations: {st.session_state['campaign_data']['ai_recommendations']}\nInclude title, summary, metrics table, recommendations."
+        report_content = get_ai_response(report_prompt, "Create a formal sustainability report.")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             pdfkit.from_string(report_content, tmp.name)
             with open(tmp.name, "rb") as f:
-                st.download_button(
-                    "Download PDF", f, 
-                    f"{data['Campaign Name'].replace(' ', '_')}_report.pdf",
-                    use_container_width=True
-                )
+                st.download_button("Download PDF", f, f"{data['Campaign Name'].replace(' ', '_')}_report.pdf", use_container_width=True)
         os.unlink(tmp.name)
     except Exception as e:
-        st.error(f"PDF generation failed: {e}. Install 'wkhtmltopdf'.")
+        st.error(f"PDF generation failed: {e}. Ensure 'wkhtmltopdf' is installed.")
