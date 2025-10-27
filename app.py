@@ -2,42 +2,48 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import openai
+from openai import OpenAI
 import pdfkit
 import tempfile
 import os
 import fitz  # PyMuPDF for PDF text extraction
 import json
 
+# --- Initialize OpenAI Client ---
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
 # --- Page Configuration ---
 st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
 
-# --- Load OpenAI API Key ---
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# --- Initialize Session State for Form Data ---
+if "input_method" not in st.session_state:
+    st.session_state["input_method"] = "manual"  # Default to manual input
+if "campaign_data" not in st.session_state:
+    st.session_state["campaign_data"] = {
+        "Campaign Name": "Green Horizons Launch",
+        "Location": "Sydney",
+        "Duration": 2,
+        "Staff Count": 25,
+        "Travel Mode": "Air",
+        "Brochures": 2000,
+        "Tote Bags": 500,
+        "Accommodation": "4-star",
+        "Local Vendors": True
+    }
 
-# --- PDF Upload and Text Extraction Functions ---
-st.sidebar.header("📄 Upload Marketing Plan (PDF)")
-uploaded_file = st.sidebar.file_uploader("Upload PDF", type="pdf")
-
+# --- PDF Text Extraction Function ---
 def extract_text_from_pdf(file, max_chars=8000):
-    """
-    Extracts text from PDF while cleaning noise and limiting length
-    Args:
-        file: Uploaded PDF file object
-        max_chars: Maximum characters to process (prevents token overflow)
-    Returns:
-        Cleaned text string from PDF
-    """
+    """Extracts and cleans text from PDF, limiting length to prevent token overflow"""
     with fitz.open(stream=file.read(), filetype="pdf") as doc:
         full_text = []
         total_chars = 0
         
         for page in doc:
-            # Extract and clean page text
             page_text = page.get_text().strip()
             if not page_text:
-                continue  # Skip empty pages
+                continue
             
-            # Remove header/footer noise patterns
+            # Remove header/footer noise
             lines = [line for line in page_text.split('\n') 
                     if not line.strip().lower().startswith(("page", "confidential", "draft", "©"))]
             cleaned_page = '\n'.join(lines)
@@ -53,14 +59,9 @@ def extract_text_from_pdf(file, max_chars=8000):
             
         return '\n\n'.join(full_text)
 
+# --- PDF Data Extraction Function ---
 def extract_campaign_data(text):
-    """
-    Uses GPT-4 to extract structured campaign data from text
-    Args:
-        text: Cleaned text from PDF
-    Returns:
-        Dictionary with extracted campaign metrics
-    """
+    """Extracts structured campaign data using GPT-4"""
     prompt = f"""
     You are a precision-focused sustainability analyst. Extract the following fields from the marketing plan text. 
     Follow these strict rules:
@@ -97,141 +98,207 @@ def extract_campaign_data(text):
     }}
     """
     
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,  # Low temperature for consistent output
+        temperature=0.1,
         max_tokens=500
     )
     
-    # Clean response to ensure valid JSON
     raw_response = response.choices[0].message.content.strip()
-    # Remove markdown code blocks if present
     if raw_response.startswith('```'):
         raw_response = raw_response.split('```')[1].strip()
     
     return json.loads(raw_response)
 
-# --- Default Campaign Values ---
-defaults = {
-    "Campaign Name": "Green Horizons Launch",
-    "Location": "Sydney",
-    "Duration": 2,
-    "Staff Count": 25,
-    "Travel Mode": "Air",
-    "Brochures": 2000,
-    "Tote Bags": 500,
-    "Accommodation": "4-star",
-    "Local Vendors": True
-}
+# --- Input Method Selection (Main Sidebar) ---
+st.sidebar.header("🔍 Input Method")
+input_method = st.sidebar.radio(
+    "Choose how to provide campaign data:",
+    ["Manual Entry", "Upload PDF"],
+    index=0 if st.session_state["input_method"] == "manual" else 1,
+    key="input_method_selector"
+)
 
-# --- Handle PDF Upload and Data Extraction ---
-if uploaded_file:
-    with st.spinner("Extracting campaign details..."):
-        # Extract and display raw text for debugging
-        pdf_text = extract_text_from_pdf(uploaded_file)
-        with st.expander("View Extracted Text (for debugging)"):
-            st.text_area("Raw Text from PDF", pdf_text, height=200)
-        
-        try:
-            extracted = extract_campaign_data(pdf_text)
+# Update session state based on selection
+st.session_state["input_method"] = "manual" if input_method == "Manual Entry" else "pdf"
+
+# --- PDF Upload Workflow ---
+if st.session_state["input_method"] == "pdf":
+    st.sidebar.header("📄 Upload Marketing Plan")
+    uploaded_file = st.sidebar.file_uploader("Upload PDF (max 10 pages)", type="pdf")
+    
+    if uploaded_file:
+        with st.spinner("Extracting data from PDF..."):
+            pdf_text = extract_text_from_pdf(uploaded_file)
             
-            # Identify missing fields
-            missing_fields = [k for k, v in extracted.items() if v == "NOT_FOUND"]
-            if missing_fields:
-                st.warning(f"⚠️ Missing fields: {', '.join(missing_fields)}. Using defaults for these.")
+            # Show extracted text for verification
+            with st.sidebar.expander("View Extracted Text", expanded=False):
+                st.text_area("Raw Text", pdf_text, height=150)
             
-            # Map extracted data to form fields
-            field_mapping = {
-                "Accommodation": "Accommodation Type",
-                "Local Vendors": "Vendor Type",
-                "Brochures": "Materials Used",
-                "Tote Bags": "Materials Used"
-            }
-            
-            for key in defaults:
-                extracted_key = field_mapping.get(key, key)
+            try:
+                extracted_data = extract_campaign_data(pdf_text)
                 
-                if extracted_key in extracted and extracted[extracted_key] != "NOT_FOUND":
-                    # Handle materials splitting
-                    if key in ["Brochures", "Tote Bags"] and extracted_key == "Materials Used":
-                        materials = extracted[extracted_key]
-                        if key == "Brochures" and "Brochures:" in materials:
+                # Map extracted fields to session state
+                field_mapping = {
+                    "Campaign Name": "Campaign Name",
+                    "Location": "Location",
+                    "Duration": "Duration",
+                    "Staff Count": "Staff Count",
+                    "Travel Mode": "Travel Mode",
+                    "Accommodation Type": "Accommodation",
+                    "Vendor Type": "Local Vendors",
+                    "Materials Used": "Materials"
+                }
+                
+                # Update session state with extracted data
+                for extracted_key, form_key in field_mapping.items():
+                    if extracted_key in extracted_data and extracted_data[extracted_key] != "NOT_FOUND":
+                        if form_key == "Local Vendors":
+                            st.session_state["campaign_data"][form_key] = extracted_data[extracted_key] == "local"
+                        elif form_key == "Duration" or form_key == "Staff Count":
                             try:
-                                defaults[key] = int(materials.split("Brochures:")[1].split(",")[0].strip())
-                            except (IndexError, ValueError):
-                                pass  # Keep default on parsing error
-                        if key == "Tote Bags" and "Tote Bags:" in materials:
-                            try:
-                                defaults[key] = int(materials.split("Tote Bags:")[1].split(",")[0].strip())
-                            except (IndexError, ValueError):
-                                pass  # Keep default on parsing error
-                    
-                    # Handle vendor type conversion
-                    elif key == "Local Vendors":
-                        defaults[key] = extracted[extracted_key] == "local"
-                    
-                    # Handle numeric fields
-                    elif key in ["Duration", "Staff Count"]:
-                        try:
-                            defaults[key] = int(extracted[extracted_key])
-                        except (ValueError, TypeError):
-                            pass  # Keep default on parsing error
-                    
-                    # Handle text fields
-                    else:
-                        defaults[key] = extracted[extracted_key]
-        
-        except json.JSONDecodeError:
-            st.error("⚠️ Failed to parse response. The AI returned invalid JSON format.")
-        except Exception as e:
-            st.error(f"⚠️ Extraction failed: {str(e)}. Please check PDF content formatting.")
+                                st.session_state["campaign_data"][form_key] = int(extracted_data[extracted_key])
+                            except ValueError:
+                                pass  # Keep default if conversion fails
+                        elif form_key == "Materials":
+                            # Parse brochures and tote bags
+                            materials = extracted_data[extracted_key]
+                            if "Brochures:" in materials:
+                                try:
+                                    st.session_state["campaign_data"]["Brochures"] = int(materials.split("Brochures:")[1].split(",")[0].strip())
+                                except (IndexError, ValueError):
+                                    pass
+                            if "Tote Bags:" in materials:
+                                try:
+                                    st.session_state["campaign_data"]["Tote Bags"] = int(materials.split("Tote Bags:")[1].split(",")[0].strip())
+                                except (IndexError, ValueError):
+                                    pass
+                        else:
+                            st.session_state["campaign_data"][form_key] = extracted_data[extracted_key]
+                
+                st.sidebar.success("✅ Data extracted successfully! Review and edit below.")
+                
+            except json.JSONDecodeError:
+                st.sidebar.error("❌ Failed to parse data. Please check PDF formatting.")
+            except Exception as e:
+                st.sidebar.error(f"❌ Error: {str(e)[:50]}")
 
-# --- Sidebar Input Form ---
-st.sidebar.header("📋 Review & Edit Campaign Details")
-campaign_name = st.sidebar.text_input("Campaign Name", defaults["Campaign Name"])
-location = st.sidebar.text_input("Location", defaults["Location"])
-duration = st.sidebar.slider("Duration (days)", 1, 10, defaults["Duration"])
-staff_count = st.sidebar.number_input("Staff Count", min_value=1, value=defaults["Staff Count"])
-travel_mode = st.sidebar.selectbox(
-    "Travel Mode", 
-    ["Air", "Train", "Car"], 
-    index=["Air", "Train", "Car"].index(defaults["Travel Mode"])
-)
-brochures = st.sidebar.number_input("Printed Brochures", min_value=0, value=defaults["Brochures"])
-tote_bags = st.sidebar.number_input("Tote Bags", min_value=0, value=defaults["Tote Bags"])
-accommodation = st.sidebar.selectbox(
-    "Accommodation", 
-    ["3-star", "4-star", "5-star"], 
-    index=["3-star", "4-star", "5-star"].index(defaults["Accommodation"])
-)
-local_vendors = st.sidebar.checkbox("Using Local Vendors?", value=defaults["Local Vendors"])
+# --- Manual Input Form ---
+st.sidebar.header("📋 Campaign Details")
+with st.sidebar.form("campaign_form"):
+    # Campaign Name
+    campaign_name = st.text_input(
+        "Campaign Name",
+        st.session_state["campaign_data"]["Campaign Name"]
+    )
+    
+    # Location
+    location = st.text_input(
+        "Location",
+        st.session_state["campaign_data"]["Location"]
+    )
+    
+    # Duration
+    duration = st.slider(
+        "Duration (days)",
+        1, 10,
+        st.session_state["campaign_data"]["Duration"]
+    )
+    
+    # Staff Count
+    staff_count = st.number_input(
+        "Staff Count",
+        min_value=1,
+        value=st.session_state["campaign_data"]["Staff Count"]
+    )
+    
+    # Travel Mode
+    travel_mode = st.selectbox(
+        "Travel Mode",
+        ["Air", "Train", "Car"],
+        index=["Air", "Train", "Car"].index(st.session_state["campaign_data"]["Travel Mode"])
+    )
+    
+    # Materials
+    col1, col2 = st.columns(2)
+    with col1:
+        brochures = st.number_input(
+            "Brochures",
+            min_value=0,
+            value=st.session_state["campaign_data"]["Brochures"]
+        )
+    with col2:
+        tote_bags = st.number_input(
+            "Tote Bags",
+            min_value=0,
+            value=st.session_state["campaign_data"]["Tote Bags"]
+        )
+    
+    # Accommodation
+    accommodation = st.selectbox(
+        "Accommodation",
+        ["3-star", "4-star", "5-star"],
+        index=["3-star", "4-star", "5-star"].index(st.session_state["campaign_data"]["Accommodation"])
+    )
+    
+    # Local Vendors
+    local_vendors = st.checkbox(
+        "Using Local Vendors?",
+        value=st.session_state["campaign_data"]["Local Vendors"]
+    )
+    
+    # Save button
+    submit = st.form_submit_button("Save Details")
+    if submit:
+        # Update session state with form data
+        st.session_state["campaign_data"].update({
+            "Campaign Name": campaign_name,
+            "Location": location,
+            "Duration": duration,
+            "Staff Count": staff_count,
+            "Travel Mode": travel_mode,
+            "Brochures": brochures,
+            "Tote Bags": tote_bags,
+            "Accommodation": accommodation,
+            "Local Vendors": local_vendors
+        })
+        st.sidebar.success("✅ Details saved!")
+
+# --- Load Form Data from Session State ---
+data = st.session_state["campaign_data"]
+campaign_name = data["Campaign Name"]
+location = data["Location"]
+duration = data["Duration"]
+staff_count = data["Staff Count"]
+travel_mode = data["Travel Mode"]
+brochures = data["Brochures"]
+tote_bags = data["Tote Bags"]
+accommodation = data["Accommodation"]
+local_vendors = data["Local Vendors"]
 
 # --- Sustainability Scoring Logic ---
 def calculate_scores():
     """Calculates sustainability scores based on campaign parameters"""
-    # Environmental impact scoring (40% weight)
     env_score = 40
     if travel_mode == "Air":
-        env_score -= 12  # Highest impact penalty
+        env_score -= 12
     elif travel_mode == "Car":
-        env_score -= 6   # Medium impact penalty
+        env_score -= 6
     else:
-        env_score -= 3   # Lowest impact penalty
+        env_score -= 3
         
-    env_score -= min(5, (brochures // 1000) * 5)  # Penalize excessive brochures
-    env_score -= min(4, (tote_bags // 300) * 4)    # Penalize excessive tote bags
+    env_score -= min(5, (brochures // 1000) * 5)
+    env_score -= min(4, (tote_bags // 300) * 4)
 
-    # Social responsibility scoring (30% weight)
     social_score = 30
     if not local_vendors:
-        social_score -= 10  # Penalty for non-local vendors
+        social_score -= 10
     if accommodation == "5-star":
-        social_score -= 5   # Penalty for luxury accommodation
+        social_score -= 5
 
-    # Fixed baseline scores for remaining categories
-    gov_score = 20         # Governance & Ethics (20% weight)
-    innovation_score = 10  # Innovation & Inclusion (10% weight)
+    gov_score = 20
+    innovation_score = 10
 
     return {
         "Environmental Impact": max(0, round(env_score)),
@@ -240,16 +307,51 @@ def calculate_scores():
         "Innovation & Inclusion": innovation_score
     }
 
-# Calculate scores
 scores = calculate_scores()
 total_score = sum(scores.values())
 
-# --- SDG Alignment Mapping ---
-sdg_status = {
-    "SDG 12 (Responsible Consumption)": "✅ Aligned",
-    "SDG 13 (Climate Action)": "⚠️ Partial",
-    "SDG 8 (Decent Work)": "✅ Aligned",
-    "SDG 5 & 11 (Gender & Cities)": "⚠️ Partial"
+# --- Enhanced SDG Information ---
+sdg_details = {
+    "SDG 12: Responsible Consumption and Production": {
+        "goal": "Ensure sustainable consumption and production patterns",
+        "targets": [
+            "Halve per capita global food waste at the retail and consumer levels",
+            "Achieve the environmentally sound management of chemicals and all wastes",
+            "Reduce waste generation through prevention, reduction, recycling, and reuse"
+        ],
+        "alignment": "✅ Aligned" if (brochures < 1000 and tote_bags < 300) else "⚠️ Partial",
+        "explanation": f"Your campaign uses {brochures} brochures and {tote_bags} tote bags. Reducing printed materials and using recyclable tote bags strengthens alignment with SDG 12."
+    },
+    "SDG 13: Climate Action": {
+        "goal": "Take urgent action to combat climate change and its impacts",
+        "targets": [
+            "Strengthen resilience and adaptive capacity to climate-related hazards",
+            "Integrate climate change measures into national policies, strategies, and planning",
+            "Improve education, awareness-raising, and human and institutional capacity on climate change mitigation"
+        ],
+        "alignment": "✅ Aligned" if travel_mode in ["Train", "Car"] else "⚠️ Partial",
+        "explanation": f"Travel mode ({travel_mode}) significantly impacts carbon emissions. Air travel has higher emissions than train or car travel, reducing alignment with SDG 13."
+    },
+    "SDG 8: Decent Work and Economic Growth": {
+        "goal": "Promote sustained, inclusive, and sustainable economic growth, full and productive employment, and decent work for all",
+        "targets": [
+            "Achieve higher levels of economic productivity through diversification, technological upgrading, and innovation",
+            "Promote development-oriented policies that support productive activities, decent job creation, entrepreneurship, and innovation",
+            "Protect labor rights and promote safe and secure working environments for all workers"
+        ],
+        "alignment": "✅ Aligned" if local_vendors else "⚠️ Partial",
+        "explanation": f"Using {'' if local_vendors else 'non-'}local vendors directly impacts local economies. Local sourcing supports decent work and economic growth in the campaign location (SDG 8)."
+    },
+    "SDG 5 & 11: Gender Equality & Sustainable Cities": {
+        "goal": "SDG 5: Achieve gender equality; SDG 11: Make cities inclusive, safe, resilient, and sustainable",
+        "targets": [
+            "SDG 5: Ensure women's full participation in decision-making",
+            "SDG 11: Provide universal access to safe, inclusive green spaces",
+            "SDG 11: Strengthen efforts to protect cultural and natural heritage"
+        ],
+        "alignment": "⚠️ Partial (needs more data)",
+        "explanation": "Alignment depends on gender diversity in staff (SDG 5) and whether the campaign venue is accessible, green, and supports local communities (SDG 11)."
+    }
 }
 
 # --- AI Recommendations Generator ---
@@ -267,7 +369,7 @@ def generate_ai_recommendations(description):
     Provide clear, actionable recommendations with specific metrics where possible.
     """
     
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
@@ -285,7 +387,7 @@ def generate_html_report():
             body {{ font-family: Arial; padding: 20px; }}
             h1, h2 {{ color: #2E8B57; }}
             .section {{ margin-bottom: 25px; }}
-            .metric {{ font-weight: bold; }}
+            .sdg-box {{ border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px; }}
         </style>
     </head>
     <body>
@@ -302,10 +404,19 @@ def generate_html_report():
         </div>
 
         <div class="section">
-            <h2>SDG Contributions</h2>
-            <ul>
-                {''.join(f"<li>{sdg}: {status}</li>" for sdg, status in sdg_status.items())}
-            </ul>
+            <h2>SDG Alignment Details</h2>
+            {''.join(f'''
+                <div class="sdg-box">
+                    <h3>{sdg}</h3>
+                    <p><strong>Goal:</strong> {details['goal']}</p>
+                    <p><strong>Key Targets:</strong></p>
+                    <ul>
+                        {''.join(f"<li>{t}</li>" for t in details['targets'])}
+                    </ul>
+                    <p><strong>Alignment:</strong> {details['alignment']}</p>
+                    <p><strong>Explanation:</strong> {details['explanation']}</p>
+                </div>
+            ''' for sdg, details in sdg_details.items())}
         </div>
 
         <div class="section">
@@ -322,6 +433,9 @@ def generate_html_report():
 # --- Main Dashboard Layout ---
 st.title("🌿 Sustainable Marketing Evaluator Dashboard")
 
+# Input Method Indicator
+st.info(f"Current Input Method: {'Manual Entry' if st.session_state['input_method'] == 'manual' else 'PDF Upload'}")
+
 # Campaign Summary Section
 st.subheader("Campaign Summary")
 st.write(f"**Campaign Name:** {campaign_name}")
@@ -337,7 +451,6 @@ st.write(f"**Local Vendors:** {'Yes' if local_vendors else 'No'}")
 st.subheader("📊 Sustainability Scorecard")
 st.metric("Overall Sustainability Score", f"{total_score}/100")
 
-# Score visualization
 fig, ax = plt.subplots(figsize=(10, 5))
 ax.bar(scores.keys(), scores.values(), color=["#4CAF50", "#2196F3", "#FF9800", "#9C27B0"])
 ax.set_ylim(0, 40)
@@ -345,10 +458,16 @@ ax.set_ylabel("Score")
 ax.set_title("Sustainability Performance Breakdown")
 st.pyplot(fig)
 
-# SDG Alignment Section
-st.subheader("🌍 SDG Alignment")
-for sdg, status in sdg_status.items():
-    st.write(f"{sdg}: {status}")
+# Enhanced SDG Section
+st.subheader("🌍 SDG Alignment Details")
+for sdg, details in sdg_details.items():
+    with st.expander(sdg):
+        st.write(f"**Global Goal:** {details['goal']}")
+        st.write("**Key Targets:**")
+        for target in details['targets']:
+            st.write(f"- {target}")
+        st.write(f"**Campaign Alignment:** {details['alignment']}")
+        st.write(f"**Explanation:** {details['explanation']}")
 
 # AI Recommendations Section
 st.subheader("🧠 AI Sustainability Recommendations")
@@ -376,8 +495,8 @@ with st.expander("View ESG Report Summary"):
     st.write(f"**Duration:** {duration} days")
     st.write(f"**Total Score:** {total_score}/100")
     st.write("**SDG Contributions:**")
-    for sdg, status in sdg_status.items():
-        st.write(f"- {sdg}: {status}")
+    for sdg, details in sdg_details.items():
+        st.write(f"- {sdg}: {details['alignment']}")
     if ai_recommendations:
         st.write("**Recommendations:**")
         for rec in ai_recommendations.split("\n"):
@@ -401,6 +520,6 @@ if st.button("📄 Export ESG Report as PDF"):
                         file_name=f"{campaign_name.replace(' ', '_')}_ESG_Report.pdf",
                         mime="application/pdf"
                     )
-            os.unlink(tmpfile.name)  # Clean up temporary file
+            os.unlink(tmpfile.name)
         except Exception as e:
             st.error(f"Failed to generate PDF: {str(e)}. Ensure pdfkit and wkhtmltopdf are installed.")
