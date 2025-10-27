@@ -191,10 +191,26 @@ def ai_generate_sustainability_tips():
     total_carbon = calculate_total_carbon_emission()
     _, recyclable_rate, _ = calculate_material_metrics()
     
-    prompt = f"3 actionable tips for {data['Campaign Name']}:\nScore: {sum(scores.values())}/100, CO₂: {total_carbon}kg, Recyclable: {recyclable_rate}%, Local Vendors: {data['Local Vendor %']}%\nLow scores: {[k for k, v in scores.items() if v < 10]}\nStart with verbs (e.g., 'Switch...')."
+    prompt = f"""Generate 3 DISTINCT sustainability recommendations for this campaign:
+    - Campaign: {data['Campaign Name']} (Duration: {data['Duration (days)']} days)
+    - Score: {sum(scores.values())}/100 | Low areas: {[k for k, v in scores.items() if v < 10]}
+    - Metrics: {total_carbon}kg CO₂ | {recyclable_rate}% recyclable | {data['Local Vendor %']}% local vendors
+    
+    Guidelines:
+    1. Number recommendations 1, 2, 3 (no duplicates).
+    2. Each must be specific (e.g., "Replace plastic badges with bamboo alternatives" NOT "Use eco materials").
+    3. Include WHY it matters (e.g., "Reduces plastic waste by 50%").
+    4. Reference campaign details (e.g., "Given the 5-day duration, ...")."""
+    
     response = get_ai_response(prompt)
-    return [tip.strip() for tip in response.split("-") if tip.strip() and not tip.strip().isdigit()]
-
+    # Clean and filter recommendations
+    recommendations = []
+    for line in response.split("\n"):
+        line = line.strip()
+        if line and (line.startswith("1.") or line.startswith("2.") or line.startswith("3.")):
+            recommendations.append(line)
+    return recommendations[:3]  # Ensure max 3
+    
 def ai_analyze_custom_material(material_name):
     # 1. Validate input first (prevent empty requests)
     if not material_name or material_name.strip() == "":
@@ -313,9 +329,11 @@ def calculate_sustainability_scores():
     # Social Responsibility (30 pts)
     local_score = min(15, round(data["Local Vendor %"] / 100 * 15))
     total_staff = sum(g["Staff Count"] for g in data["Staff Groups"])
-    acc_score_map = {"Budget":15, "3-star":15, "4-star":10, "5-star":5}
-    total_acc_score = sum(acc_score_map[g["Accommodation"]] * g["Staff Count"] for g in data["Staff Groups"])
-    acc_score = total_acc_score // total_staff if total_staff >0 else 0
+    acc_score_map = {"Budget": 15, "3-star": 15, "4-star": 10, "5-star": 5}
+    total_acc_score = 0
+    for group in data["Staff Groups"]:
+        total_acc_score += acc_score_map[group["Accommodation"]] * group["Staff Count"]
+    accommodation_score = total_acc_score // total_staff if total_staff > 0 else 0
     social_score = local_score + acc_score
 
     # Governance (20 pts) + Operations (10 pts)
@@ -428,10 +446,14 @@ travel_mode = st.sidebar.selectbox(
 # Show seat class info tooltip for flights
 if travel_mode.startswith("Air -"):
     st.sidebar.caption("ℹ️ Higher seat classes increase carbon emissions due to greater space per passenger.")
-    accommodation = st.sidebar.selectbox(f"Accommodation", ["Budget", "3-star", "4-star", "5-star"], 
-                                        ["Budget", "3-star", "4-star", "5-star"].index(default["Accommodation"]), 
-                                        key=f"staff_{i}_acc")
-
+# In the Staff Groups sidebar section (when defining accommodation):
+    accommodation = st.sidebar.selectbox(
+        f"Accommodation Type (Group {i+1})",  # Explicit label
+        ["Budget", "3-star", "4-star", "5-star"], 
+        index=["Budget", "3-star", "4-star", "5-star"].index(default["Accommodation"]), 
+        key=f"staff_{i}_acc"
+    )
+st.sidebar.caption("💡 Budget/3-star = lower emissions | 5-star = higher emissions")  # Clarify impact
     staff_groups.append({
         "Staff Count": staff_count, "Departure": departure, "Destination": destination,
         "Travel Distance (km)": travel_dist, "Travel Mode": travel_mode, "Accommodation": accommodation
@@ -492,8 +514,22 @@ gov_checks = [st.sidebar.checkbox(c, st.session_state["campaign_data"]["governan
              for i, c in enumerate(GOVERNANCE_CRITERIA)]
 
 st.sidebar.subheader("⚙️ Operational Efficiency")
-ops_checks = [st.sidebar.checkbox(c, st.session_state["campaign_data"]["operations_checks"][i], key=f"ops_{i}") 
-             for i, c in enumerate(OPERATIONS_CRITERIA)]
+# In the Operations Criteria sidebar section:
+ops_checks = []
+for i, criteria in enumerate(OPERATIONS_CRITERIA):
+    # Auto-check "duration ≤3 days" based on actual duration
+    if criteria == "Campaign duration ≤ 3 days":
+        # Pre-select if duration is ≤3 days
+        default_val = data["Duration (days)"] <= 3
+    else:
+        default_val = data["operations_checks"][i]
+    
+    checked = st.sidebar.checkbox(
+        criteria, 
+        value=default_val,
+        key=f"ops_{i}"
+    )
+    ops_checks.append(checked)
 
 # Save Button
 if st.sidebar.button("💾 Save Details", use_container_width=True):
@@ -596,16 +632,45 @@ if st.session_state["campaign_data"]["ai_recommendations"]:
         st.write(f"{i}. {rec}")
 
 # 7. PDF Export
+# Replace the PDF Export section with this:
 st.subheader("📄 Export Report")
-if st.button("Generate PDF Report", use_container_width=True):
+if st.button("Generate Report", use_container_width=True):
     try:
-        report_prompt = f"Create a professional sustainability report for {data['Campaign Name']} with:\n- Score: {total_score}/100\n- Metrics: {total_carbon}kg CO₂, {recyclable_rate}% recyclable\n- Recommendations: {st.session_state['campaign_data']['ai_recommendations']}\nInclude title, summary, metrics table, recommendations."
-        report_content = get_ai_response(report_prompt, "Create a formal sustainability report.")
+        # Generate report content via AI
+        report_prompt = f"""Create a professional sustainability report for {data['Campaign Name']} with:
+        - Score: {total_score}/100
+        - Key Metrics: {total_carbon}kg CO₂, {recyclable_rate}% recyclable materials, {data['Local Vendor %']}% local vendors
+        - Recommendations: {st.session_state['campaign_data']['ai_recommendations']}
+        Structure: Title, Executive Summary, Metrics Table, Recommendations, and Next Steps."""
+        report_content = get_ai_response(report_prompt, "Write a formal, concise sustainability report.")
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            pdfkit.from_string(report_content, tmp.name)
-            with open(tmp.name, "rb") as f:
-                st.download_button("Download PDF", f, f"{data['Campaign Name'].replace(' ', '_')}_report.pdf", use_container_width=True)
-        os.unlink(tmp.name)
+        # Try PDF generation first
+        try:
+            # Check if wkhtmltopdf is installed
+            pdfkit.configuration(wkhtmltopdf=pdfkit.from_url('http://google.com', False))  # Test config
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                pdfkit.from_string(report_content, tmp.name)
+                with open(tmp.name, "rb") as f:
+                    st.download_button(
+                        "Download PDF Report", f, 
+                        f"{data['Campaign Name'].replace(' ', '_')}_report.pdf",
+                        use_container_width=True
+                    )
+            os.unlink(tmp.name)
+        
+        # Fallback to text report if PDF fails
+        except:
+            st.warning("⚠️ wkhtmltopdf not found. Generating text report instead.")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
+                tmp.write(report_content.encode("utf-8"))
+                with open(tmp.name, "rb") as f:
+                    st.download_button(
+                        "Download Text Report", f, 
+                        f"{data['Campaign Name'].replace(' ', '_')}_report.txt",
+                        use_container_width=True
+                    )
+            os.unlink(tmp.name)
+
     except Exception as e:
-        st.error(f"PDF generation failed: {e}. Ensure 'wkhtmltopdf' is installed.")
+        st.error(f"Report generation failed: {str(e)}")
