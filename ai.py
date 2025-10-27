@@ -158,18 +158,62 @@ def ai_generate_sustainability_tips():
     return [tip.strip() for tip in response.split("-") if tip.strip() and not tip.strip().isdigit()]
 
 def ai_analyze_custom_material(material_name):
-    if not material_name:
+    # 1. Validate input first (prevent empty requests)
+    if not material_name or material_name.strip() == "":
+        st.warning("⚠️ Please enter a custom material name first (e.g., 'Bamboo Utensils').")
         return (5, False)
     
-    prompt = f"Analyze '{material_name}': 1. Impact weight (1-10; cotton=2, plastic=8) 2. Recyclable (Yes/No). Return 'weight: X, recyclable: Y'."
-    response = get_ai_response(prompt, "Materials expert: Return only specified format.")
+    # 2. Refine prompt to force strict format (reduces AI response variability)
+    prompt = f"""Analyze the marketing campaign material named "{material_name.strip()}". 
+    Follow these rules EXACTLY:
+    1. Impact weight: A number between 1 (low impact, e.g., bamboo) and 10 (high impact, e.g., non-recyclable plastic).
+    2. Recyclable: Only "Yes" or "No" (no other words).
+    Return ONLY in this format: "weight: X, recyclable: Y" (replace X with number, Y with Yes/No).
+    Examples: 
+    - For "Cotton Tote Bag": "weight: 2, recyclable: Yes"
+    - For "Plastic Water Bottle": "weight: 8, recyclable: No"
+    Do NOT add extra text, explanations, or formatting."""
+    
+    # 3. Get AI response (with timeout protection)
     try:
-        weight = int(response.split("weight: ")[1].split(",")[0].strip())
-        recyclable = "Yes" in response.split("recyclable: ")[1]
-        return (max(1, min(10, weight)), recyclable)
-    except:
-        st.warning(f"⚠️ AI material analysis failed. Using defaults (5, False).")
+        response = get_ai_response(
+            prompt, 
+            system_msg="You are a materials science expert. Return ONLY the EXACT format requested—no extra content."
+        )
+        response = response.strip()  # Clean up extra spaces/newlines
+        st.debug(f"AI Material Response: {response}")  # Add debug log to check raw AI output
+    
+    except Exception as e:
+        st.error(f"⚠️ AI Request Failed: {str(e)}")
         return (5, False)
+    
+    # 4. Robust parsing (handles minor AI formatting errors)
+    try:
+        # Extract weight (look for "weight: " followed by a number)
+        if "weight: " not in response:
+            raise ValueError("Missing 'weight: ' in response")
+        weight_str = response.split("weight: ")[1].split(",")[0].strip()
+        weight = int(weight_str)
+        weight = max(1, min(10, weight))  # Ensure weight stays 1-10
+        
+        # Extract recyclable (look for "recyclable: " followed by Yes/No)
+        if "recyclable: " not in response:
+            raise ValueError("Missing 'recyclable: ' in response")
+        recyclable_str = response.split("recyclable: ")[1].strip().lower()
+        recyclable = recyclable_str == "yes"  # Convert to boolean
+        
+        # Success: Show feedback to user
+        st.success(f"✅ AI Analyzed '{material_name}': Weight = {weight}, Recyclable = {recyclable}")
+        return (weight, recyclable)
+    
+    # 5. Handle parsing failures gracefully (with debug info)
+    except ValueError as ve:
+        st.error(f"⚠️ AI Response Format Error: {ve}. Raw response: '{response}'")
+        return (5, False)
+    except Exception as e:
+        st.error(f"⚠️ Unexpected Error Parsing AI Response: {str(e)}. Raw response: '{response}'")
+        return (5, False)
+        
 # --- Calculation Functions ---
 def calculate_total_carbon_emission():
     total = 0
@@ -337,18 +381,26 @@ for i in range(st.session_state["material_count"]):
     quantity = st.sidebar.number_input(f"Quantity", 0, value=default["quantity"], key=f"mat_{i}_qty")
 
     custom_name, custom_weight, custom_recyclable, material_type = "", 0, False, "Custom"
-    if mat_type == "Other (Custom)":
-        custom_name = st.sidebar.text_input("Custom Name", default["custom_name"], key=f"mat_{i}_custom")
-        if st.sidebar.button("🤖 AI Impact", key=f"mat_ai_{i}") and custom_name and OPENAI_AVAILABLE:
-            with st.spinner("Analyzing..."):
+    # In the "Materials" section of the sidebar (where mat_type == "Other (Custom)")
+if mat_type == "Other (Custom)":
+    custom_name = st.sidebar.text_input(
+        "Custom Material Name", 
+        default["custom_name"], 
+        key=f"mat_{i}_custom",
+        placeholder="e.g., Bamboo Utensils, Biodegradable Cups"  # Add clear placeholder
+    )
+    # Add validation: Disable AI button if name is empty
+    if not custom_name.strip():
+        st.sidebar.warning("ℹ️ Enter a material name first (e.g., 'Biodegradable Plates').")
+        st.sidebar.button("🤖 AI Impact", key=f"mat_ai_{i}", disabled=True)  # Disable button
+    else:
+        # Enable button only if name is provided
+        if st.sidebar.button("🤖 AI Impact", key=f"mat_ai_{i}") and OPENAI_AVAILABLE:
+            with st.spinner("Analyzing material impact..."):
                 weight, recyclable = ai_analyze_custom_material(custom_name)
                 custom_weight, custom_recyclable = weight, recyclable
-                st.sidebar.success(f"Weight: {weight}, Recyclable: {recyclable}")
-        else:
-            custom_weight, custom_recyclable = default["custom_weight"], default["custom_recyclable"]
-    else:
-        material_type = next((m["type"] for m in PREDEFINED_MATERIALS if m["name"] == mat_type), "Paper")
-
+else:
+    material_type = next((m["type"] for m in PREDEFINED_MATERIALS if m["name"] == mat_type), "Paper")
     materials.append({
         "type": mat_type, "quantity": quantity, "material_type": material_type,
         "custom_name": custom_name, "custom_weight": custom_weight, "custom_recyclable": custom_recyclable
