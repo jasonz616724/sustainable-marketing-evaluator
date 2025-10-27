@@ -163,7 +163,7 @@ def ai_analyze_custom_material(material_name):
         st.warning("⚠️ Please enter a custom material name first (e.g., 'Bamboo Utensils').")
         return (5, False)
     
-    # 2. Refine prompt to force strict format (reduces AI response variability)
+    # 2. Refine prompt to force strict format
     prompt = f"""Analyze the marketing campaign material named "{material_name.strip()}". 
     Follow these rules EXACTLY:
     1. Impact weight: A number between 1 (low impact, e.g., bamboo) and 10 (high impact, e.g., non-recyclable plastic).
@@ -174,45 +174,45 @@ def ai_analyze_custom_material(material_name):
     - For "Plastic Water Bottle": "weight: 8, recyclable: No"
     Do NOT add extra text, explanations, or formatting."""
     
-    # 3. Get AI response (with timeout protection)
+    # 3. Get AI response
     try:
         response = get_ai_response(
             prompt, 
             system_msg="You are a materials science expert. Return ONLY the EXACT format requested—no extra content."
         )
         response = response.strip()  # Clean up extra spaces/newlines
-        st.debug(f"AI Material Response: {response}")  # Add debug log to check raw AI output
     
     except Exception as e:
         st.error(f"⚠️ AI Request Failed: {str(e)}")
         return (5, False)
     
-    # 4. Robust parsing (handles minor AI formatting errors)
+    # 4. Robust parsing (no debug log)
     try:
-        # Extract weight (look for "weight: " followed by a number)
+        # Extract weight
         if "weight: " not in response:
             raise ValueError("Missing 'weight: ' in response")
         weight_str = response.split("weight: ")[1].split(",")[0].strip()
         weight = int(weight_str)
-        weight = max(1, min(10, weight))  # Ensure weight stays 1-10
+        weight = max(1, min(10, weight))  # Clamp to 1-10
         
-        # Extract recyclable (look for "recyclable: " followed by Yes/No)
+        # Extract recyclable
         if "recyclable: " not in response:
             raise ValueError("Missing 'recyclable: ' in response")
         recyclable_str = response.split("recyclable: ")[1].strip().lower()
-        recyclable = recyclable_str == "yes"  # Convert to boolean
+        recyclable = recyclable_str == "yes"
         
-        # Success: Show feedback to user
+        # Success feedback
         st.success(f"✅ AI Analyzed '{material_name}': Weight = {weight}, Recyclable = {recyclable}")
         return (weight, recyclable)
     
-    # 5. Handle parsing failures gracefully (with debug info)
+    # 5. Handle parsing failures
     except ValueError as ve:
         st.error(f"⚠️ AI Response Format Error: {ve}. Raw response: '{response}'")
         return (5, False)
     except Exception as e:
-        st.error(f"⚠️ Unexpected Error Parsing AI Response: {str(e)}. Raw response: '{response}'")
+        st.error(f"⚠️ Unexpected Error: {str(e)}. Raw response: '{response}'")
         return (5, False)
+
         
 # --- Calculation Functions ---
 def calculate_total_carbon_emission():
