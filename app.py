@@ -8,7 +8,6 @@ import tempfile
 import os
 import fitz  # PyMuPDF
 import json
-from collections import defaultdict
 
 # --- Initialize OpenAI Client ---
 try:
@@ -26,30 +25,36 @@ if "input_method" not in st.session_state:
 if "campaign_data" not in st.session_state:
     st.session_state["campaign_data"] = {
         "Campaign Name": "Green Horizons Launch",
-        "Location": "Sydney",
+        "Location": "Sydney",  # Destination
+        "Departure": "Melbourne",
         "Duration": 2,
         "Staff Count": 25,
         "Travel Mode": "Air",
-        "Materials": [{"type": "Brochures", "quantity": 2000}, {"type": "Tote Bags", "quantity": 500}],  # Dynamic list
+        "Materials": [{"type": "Brochures", "quantity": 2000}, {"type": "Tote Bags", "quantity": 500}],
         "Accommodation": "4-star",
-        "Local Vendors": True
+        "Local Vendors": True,
+        "Travel Distance": None  # km, estimated by AI
     }
 if "material_count" not in st.session_state:
     st.session_state["material_count"] = len(st.session_state["campaign_data"]["Materials"])
+if "rerun_trigger" not in st.session_state:
+    st.session_state["rerun_trigger"] = False
 
-# --- Sustainability Weights for Materials ---
-# Higher weights = more environmental impact (penalized more)
+# --- Sustainability Weights ---
 MATERIAL_IMPACT_WEIGHTS = {
-    "default": 2,  # Fallback for unknown materials
-    "Brochures": 3,
-    "Flyers": 3,
-    "Posters": 4,
-    "Banners": 5,
-    "Tote Bags": 2,
-    "Merchandise (Plastic)": 8,
-    "Merchandise (Fabric)": 3,
-    "Stickers": 6,
-    "Leaflets": 3
+    "default": 2,
+    "Brochures": 3, "Flyers": 3, "Posters": 4, "Banners": 5,
+    "Tote Bags": 2, "Merchandise (Plastic)": 8, "Merchandise (Fabric)": 3,
+    "Stickers": 6, "Leaflets": 3
+}
+
+# --- Emission Factors (kg CO2 per km per person) ---
+# Source: https://www.icao.int/environmental-protection/CarbonOffset/Pages/default.aspx
+EMISSION_FACTORS = {
+    "Air": 0.25,       # Short-haul flights
+    "Train": 0.06,     # Electric trains
+    "Car": 0.17,       # Average gasoline car
+    "Other": 0.12      # E.g., buses
 }
 
 # --- PDF Text Extraction ---
@@ -65,40 +70,37 @@ def extract_text_from_pdf(file, max_chars=8000):
                     if not line.strip().lower().startswith(("page", "confidential", "draft", "©"))]
             cleaned_page = '\n'.join(lines)
             if total_chars + len(cleaned_page) > max_chars:
+                remaining = max_chars - total_chars
                 full_text.append(cleaned_page[:remaining])
                 break
             full_text.append(cleaned_page)
             total_chars += len(cleaned_page)
         return '\n\n'.join(full_text)
 
-# --- PDF Data Extraction (Updated for Dynamic Materials) ---
+# --- AI: Extract Campaign Data (Including Locations) ---
 def extract_campaign_data(text):
     if not client:
         st.error("OpenAI client not initialized.")
         return None
 
     prompt = f"""
-    Extract campaign data with THIS FOCUS: list ALL materials used (with quantities). 
-    Follow rules:
-    1. Return "NOT_FOUND" for missing fields.
-    2. Materials: list EVERY item (e.g., "Brochures: 2000, Flyers: 500, Plastic Merch: 100").
-    3. Duration/Staff Count: numbers only.
-    4. Vendor Type: "local" or "non-local".
-    5. Travel Mode: "Air", "Train", "Car", "Other".
-
-    Fields: Campaign Name, Location, Duration (days), Staff Count, Travel Mode, Materials Used, 
-            Accommodation Type, Vendor Type.
+    Extract campaign data with these KEY fields:
+    - Departure Location (origin city)
+    - Destination Location (event city)
+    - All materials with quantities
+    - Travel Mode, Duration, Staff Count, etc.
 
     Text: {text}
 
-    Respond with ONLY JSON. Example:
+    Respond with ONLY JSON (example structure):
     {{
         "Campaign Name": "Eco Fest",
-        "Location": "Melbourne",
+        "Departure Location": "Melbourne",
+        "Destination Location": "Sydney",
         "Duration": 3,
         "Staff Count": 10,
         "Travel Mode": "Train",
-        "Materials Used": "Brochures: 500, Banners: 10, Fabric Merch: 200",
+        "Materials Used": "Brochures: 500, Banners: 10",
         "Accommodation Type": "3-star",
         "Vendor Type": "local"
     }}
@@ -119,6 +121,29 @@ def extract_campaign_data(text):
         st.error(f"Extraction failed: {str(e)}")
         return None
 
+# --- AI: Estimate Travel Distance (km) ---
+def estimate_travel_distance(departure, destination, travel_mode):
+    if not client or not departure or not destination:
+        return None
+
+    prompt = f"""
+    Estimate the typical travel distance in KILOMETERS between {departure} and {destination}
+    for {travel_mode} travel. Return ONLY the number (no text, no units). If unknown, return 0.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=10
+        )
+        distance = response.choices[0].message.content.strip()
+        return float(distance) if distance.isdigit() else None
+    except Exception as e:
+        st.warning(f"Could not estimate distance: {str(e)}")
+        return None
+
 # --- Input Method Selection ---
 st.sidebar.header("🔍 Input Method")
 input_method = st.sidebar.radio(
@@ -129,7 +154,7 @@ input_method = st.sidebar.radio(
 )
 st.session_state["input_method"] = "manual" if input_method == "Manual Entry" else "pdf"
 
-# --- PDF Upload Workflow (Updated for Materials) ---
+# --- PDF Upload Workflow ---
 if st.session_state["input_method"] == "pdf" and client:
     st.sidebar.header("📄 Upload Marketing Plan")
     uploaded_file = st.sidebar.file_uploader("Upload PDF", type="pdf")
@@ -142,10 +167,11 @@ if st.session_state["input_method"] == "pdf" and client:
             
             extracted_data = extract_campaign_data(pdf_text)
             if extracted_data:
-                # Update basic fields
+                # Update locations and travel
                 st.session_state["campaign_data"].update({
                     "Campaign Name": extracted_data.get("Campaign Name", st.session_state["campaign_data"]["Campaign Name"]),
-                    "Location": extracted_data.get("Location", st.session_state["campaign_data"]["Location"]),
+                    "Departure": extracted_data.get("Departure Location", st.session_state["campaign_data"]["Departure"]),
+                    "Location": extracted_data.get("Destination Location", st.session_state["campaign_data"]["Location"]),
                     "Duration": int(extracted_data.get("Duration", st.session_state["campaign_data"]["Duration"])),
                     "Staff Count": int(extracted_data.get("Staff Count", st.session_state["campaign_data"]["Staff Count"])),
                     "Travel Mode": extracted_data.get("Travel Mode", st.session_state["campaign_data"]["Travel Mode"]),
@@ -153,11 +179,10 @@ if st.session_state["input_method"] == "pdf" and client:
                     "Local Vendors": extracted_data.get("Vendor Type", "local").lower() == "local"
                 })
 
-                # Parse materials (e.g., "Brochures: 500, Banners: 10" → list of dicts)
+                # Parse materials
                 if "Materials Used" in extracted_data and extracted_data["Materials Used"] != "NOT_FOUND":
-                    materials_str = extracted_data["Materials Used"]
                     materials_list = []
-                    for item in materials_str.split(","):
+                    for item in extracted_data["Materials Used"].split(","):
                         item = item.strip()
                         if ":" in item:
                             mat_type, mat_qty = item.split(":", 1)
@@ -167,43 +192,54 @@ if st.session_state["input_method"] == "pdf" and client:
                                     "quantity": int(mat_qty.strip())
                                 })
                             except ValueError:
-                                continue  # Skip if quantity is invalid
+                                continue
                     if materials_list:
                         st.session_state["campaign_data"]["Materials"] = materials_list
                         st.session_state["material_count"] = len(materials_list)
 
+                # Estimate distance from extracted locations
+                if st.session_state["campaign_data"]["Departure"] and st.session_state["campaign_data"]["Location"]:
+                    distance = estimate_travel_distance(
+                        st.session_state["campaign_data"]["Departure"],
+                        st.session_state["campaign_data"]["Location"],
+                        st.session_state["campaign_data"]["Travel Mode"]
+                    )
+                    if distance:
+                        st.session_state["campaign_data"]["Travel Distance"] = distance
+
                 st.sidebar.success("✅ Data extracted! Review below.")
 
-# --- Manual Input Form (Dynamic Materials) ---
+# --- Update Material Count ---
+def update_material_count(change):
+    if change == "add":
+        st.session_state["material_count"] += 1
+    elif change == "remove" and st.session_state["material_count"] > 1:
+        st.session_state["material_count"] -= 1
+    st.session_state["rerun_trigger"] = True
+
+# --- Manual Input Form ---
 st.sidebar.header("📋 Campaign Details")
 with st.sidebar.form("campaign_form"):
+    # Travel locations
+    st.subheader("Travel Details")
+    departure = st.text_input("Departure City", st.session_state["campaign_data"]["Departure"])
+    destination = st.text_input("Destination City", st.session_state["campaign_data"]["Location"])
+    
     # Basic fields
     campaign_name = st.text_input("Campaign Name", st.session_state["campaign_data"]["Campaign Name"])
-    location = st.text_input("Location", st.session_state["campaign_data"]["Location"])
     duration = st.slider("Duration (days)", 1, 10, st.session_state["campaign_data"]["Duration"])
     staff_count = st.number_input("Staff Count", min_value=1, value=st.session_state["campaign_data"]["Staff Count"])
     travel_mode = st.selectbox(
         "Travel Mode", ["Air", "Train", "Car", "Other"],
         index=["Air", "Train", "Car", "Other"].index(st.session_state["campaign_data"]["Travel Mode"])
     )
-    accommodation = st.selectbox(
-        "Accommodation", ["3-star", "4-star", "5-star", "Budget"],
-        index=["3-star", "4-star", "5-star", "Budget"].index(st.session_state["campaign_data"]["Accommodation"])
-    )
-    local_vendors = st.checkbox("Using Local Vendors?", value=st.session_state["campaign_data"]["Local Vendors"])
-
-    # Dynamic materials section
+    
+    # Materials section
     st.subheader("Materials Used")
-    st.caption("Add/remove materials and their quantities")
+    st.caption("Add/remove materials and quantities")
     
-    # Initialize materials in session state if empty
-    if not st.session_state["campaign_data"]["Materials"]:
-        st.session_state["campaign_data"]["Materials"] = [{"type": "", "quantity": 0}]
-    
-    # Display current materials with edit fields
     materials = []
     for i in range(st.session_state["material_count"]):
-        # Use existing data if available, else empty
         default_type = st.session_state["campaign_data"]["Materials"][i]["type"] if i < len(st.session_state["campaign_data"]["Materials"]) else ""
         default_qty = st.session_state["campaign_data"]["Materials"][i]["quantity"] if i < len(st.session_state["campaign_data"]["Materials"]) else 0
         
@@ -214,74 +250,105 @@ with st.sidebar.form("campaign_form"):
             mat_qty = st.number_input(f"Quantity", min_value=0, value=default_qty, key=f"mat_qty_{i}")
         materials.append({"type": mat_type, "quantity": mat_qty})
     
-    # Buttons to add/remove materials
+    # Material buttons
     col_add, col_remove = st.columns(2)
     with col_add:
-        add_material = st.form_submit_button("➕ Add Material")
+        if st.form_submit_button("➕ Add Material"):
+            update_material_count("add")
     with col_remove:
-        remove_material = st.form_submit_button("➖ Remove Last Material")
-    
-    # Update material count based on buttons
-    if add_material:
-        st.session_state["material_count"] += 1
-        st.experimental_rerun()  # Refresh to show new field
-    if remove_material and st.session_state["material_count"] > 1:
-        st.session_state["material_count"] -= 1
-        st.experimental_rerun()  # Refresh to remove field
+        if st.form_submit_button("➖ Remove Last Material"):
+            update_material_count("remove")
 
-    # Save all data
-    submit = st.form_submit_button("💾 Save All Details")
-    if submit:
+    # Other fields
+    accommodation = st.selectbox(
+        "Accommodation", ["3-star", "4-star", "5-star", "Budget"],
+        index=["3-star", "4-star", "5-star", "Budget"].index(st.session_state["campaign_data"]["Accommodation"])
+    )
+    local_vendors = st.checkbox("Using Local Vendors?", value=st.session_state["campaign_data"]["Local Vendors"])
+
+    # Save and estimate distance
+    if st.form_submit_button("💾 Save & Calculate Distance"):
+        # Update basic data
         st.session_state["campaign_data"].update({
             "Campaign Name": campaign_name,
-            "Location": location,
+            "Departure": departure,
+            "Location": destination,
             "Duration": duration,
             "Staff Count": staff_count,
             "Travel Mode": travel_mode,
-            "Materials": materials,  # Update with dynamic materials
+            "Materials": materials,
             "Accommodation": accommodation,
             "Local Vendors": local_vendors
         })
-        st.sidebar.success("✅ All details saved!")
+
+        # Estimate travel distance
+        if departure and destination:
+            with st.spinner("Estimating travel distance..."):
+                distance = estimate_travel_distance(departure, destination, travel_mode)
+                if distance:
+                    st.session_state["campaign_data"]["Travel Distance"] = distance
+                    st.sidebar.success(f"✅ Distance estimated: {distance} km")
+                else:
+                    st.session_state["campaign_data"]["Travel Distance"] = None
+                    st.sidebar.warning("Could not estimate distance. Using default impact.")
+        else:
+            st.sidebar.warning("Enter departure and destination to calculate distance.")
+
+# --- Trigger Rerun ---
+if st.session_state["rerun_trigger"]:
+    st.session_state["rerun_trigger"] = False
+    st.rerun()
 
 # --- Load Campaign Data ---
 data = st.session_state["campaign_data"]
 campaign_name = data["Campaign Name"]
-location = data["Location"]
+departure = data["Departure"]
+destination = data["Location"]
 duration = data["Duration"]
 staff_count = data["Staff Count"]
 travel_mode = data["Travel Mode"]
 materials = data["Materials"]
 accommodation = data["Accommodation"]
 local_vendors = data["Local Vendors"]
+travel_distance = data["Travel Distance"]  # km
 
-# --- Sustainability Scoring (Updated for Materials) ---
+# --- Calculate Impacts ---
+# Material impact
+total_material_impact = 0
+for mat in materials:
+    if mat["quantity"] <= 0 or not mat["type"].strip():
+        continue
+    weight = MATERIAL_IMPACT_WEIGHTS.get(mat["type"], MATERIAL_IMPACT_WEIGHTS["default"])
+    total_material_impact += (mat["quantity"] // 100) * weight
+
+# Travel carbon impact (kg CO2)
+total_carbon = 0
+if travel_distance:
+    emission_factor = EMISSION_FACTORS.get(travel_mode, EMISSION_FACTORS["Other"])
+    total_carbon = travel_distance * emission_factor * staff_count  # per person * number of staff
+
+# --- Sustainability Scoring ---
 def calculate_scores():
-    # Environmental impact (40% weight)
     env_score = 40
 
-    # Travel impact penalty
-    if travel_mode == "Air":
-        env_score -= 12
-    elif travel_mode == "Car":
-        env_score -= 6
-    elif travel_mode == "Other":
-        env_score -= 8  # Assume moderate impact for "Other"
+    # Travel impact penalty (distance-based)
+    if travel_distance:
+        # Scale penalty by carbon (capped at 15)
+        carbon_penalty = min(15, total_carbon // 100)  # Penalty per 100kg CO2
+        env_score -= carbon_penalty
+    else:
+        # Fallback: mode-only penalty
+        if travel_mode == "Air":
+            env_score -= 10
+        elif travel_mode == "Car":
+            env_score -= 6
+        else:
+            env_score -= 4
 
-    # Materials impact penalty (weighted by material type)
-    total_material_impact = 0
-    for mat in materials:
-        if mat["quantity"] <= 0 or not mat["type"].strip():
-            continue  # Skip empty/invalid entries
-        # Get weight for material type (use default if unknown)
-        weight = MATERIAL_IMPACT_WEIGHTS.get(mat["type"], MATERIAL_IMPACT_WEIGHTS["default"])
-        # Calculate impact (scaled by quantity)
-        total_material_impact += (mat["quantity"] // 100) * weight  # Penalty per 100 units
-    
-    # Apply materials penalty (capped at 15 to avoid negative scores)
+    # Materials impact penalty
     env_score -= min(15, total_material_impact)
 
-    # Social responsibility (30% weight)
+    # Social responsibility
     social_score = 30
     if not local_vendors:
         social_score -= 10
@@ -302,19 +369,17 @@ def calculate_scores():
 scores = calculate_scores()
 total_score = sum(scores.values())
 
-# --- SDG Details (Updated for Materials) ---
+# --- SDG Details (Updated for Travel Distance) ---
 sdg_details = {
     "SDG 12: Responsible Consumption": {
         "goal": "Ensure sustainable consumption/production patterns",
-        "targets": ["Reduce waste", "Promote recyclable materials"],
         "alignment": "✅ Aligned" if total_material_impact < 10 else "⚠️ Partial",
-        "explanation": f"Total material impact: {total_material_impact}. Reduce high-impact materials (e.g., plastic) to improve alignment."
+        "explanation": f"Total material impact: {total_material_impact}. Reduce high-impact materials."
     },
     "SDG 13: Climate Action": {
         "goal": "Combat climate change",
-        "targets": ["Reduce carbon emissions"],
-        "alignment": "✅ Aligned" if travel_mode in ["Train", "Other"] else "⚠️ Partial",
-        "explanation": f"Travel mode ({travel_mode}) affects carbon footprint."
+        "alignment": "✅ Aligned" if (total_carbon < 500 or not travel_distance) else "⚠️ Partial",
+        "explanation": f"Estimated travel emissions: {total_carbon:.0f}kg CO2. Switch to trains or reduce distance to improve alignment."
     },
     "SDG 8: Decent Work": {
         "goal": "Promote sustainable economic growth",
@@ -322,23 +387,23 @@ sdg_details = {
     }
 }
 
-# --- AI Recommendations (Updated for Materials) ---
+# --- AI Recommendations (Distance-Aware) ---
 def generate_ai_recommendations():
     if not client:
         return ""
     
-    # Describe materials for AI
     materials_desc = ", ".join([f"{m['type']} ({m['quantity']} units)" for m in materials if m["quantity"] > 0])
+    travel_desc = f"{staff_count} staff traveling {travel_distance or 'unknown'} km by {travel_mode} from {departure} to {destination}"
+    
     prompt = f"""
     Analyze this campaign for sustainability improvements:
     - Name: {campaign_name}
-    - Location: {location}
-    - Staff: {staff_count} (travel: {travel_mode})
+    - Travel: {travel_desc}
     - Materials: {materials_desc}
     - Accommodation: {accommodation}
     - Local vendors: {'Yes' if local_vendors else 'No'}
 
-    Suggest 3 specific changes to reduce environmental impact, with focus on materials.
+    Suggest 3 specific changes to reduce carbon emissions (focus on travel and materials).
     """
     
     try:
@@ -356,16 +421,23 @@ def generate_ai_recommendations():
 st.title("🌿 Sustainable Marketing Evaluator Dashboard")
 st.info(f"Input Method: {'Manual Entry' if st.session_state['input_method'] == 'manual' else 'PDF Upload'}")
 
-# Campaign Summary
-st.subheader("Campaign Summary")
-st.write(f"**Name:** {campaign_name} | **Location:** {location} | **Duration:** {duration} days")
-st.write(f"**Staff:** {staff_count} | **Travel:** {travel_mode} | **Accommodation:** {accommodation}")
+# Travel & Campaign Summary
+st.subheader("🚗 Travel Details")
+st.write(f"**Route:** {departure} → {destination} | **Mode:** {travel_mode}")
+if travel_distance:
+    st.write(f"**Estimated Distance:** {travel_distance:.0f} km | **Estimated Carbon Emissions:** {total_carbon:.0f} kg CO2")
+else:
+    st.write("**Distance:** Not estimated (enter locations and click 'Save & Calculate Distance')")
+
+st.subheader("📋 Campaign Summary")
+st.write(f"**Name:** {campaign_name} | **Duration:** {duration} days | **Staff:** {staff_count}")
+st.write(f"**Accommodation:** {accommodation} | **Local Vendors:** {'Yes' if local_vendors else 'No'}")
 
 # Materials Table
 st.subheader("📦 Materials Used")
 if materials and any(m["quantity"] > 0 for m in materials):
     materials_df = pd.DataFrame(materials)
-    materials_df = materials_df[materials_df["quantity"] > 0]  # Hide empty entries
+    materials_df = materials_df[materials_df["quantity"] > 0]
     st.dataframe(materials_df, use_container_width=True)
 else:
     st.write("No materials listed. Add materials in the sidebar.")
@@ -405,6 +477,9 @@ if st.button("📄 Export ESG Report") and "ai_recommendations" in st.session_st
             .material-table th, td {{ border: 1px solid #ddd; padding: 8px; }}
         </style></head><body>
             <h1>ESG Report: {campaign_name}</h1>
+            <h2>Travel Details</h2>
+            <p>Route: {departure} → {destination} ({travel_distance or 'unknown'} km, {travel_mode})</p>
+            <p>Estimated Emissions: {total_carbon:.0f} kg CO2</p>
             <h2>Materials</h2>
             <table class="material-table">
                 <tr><th>Type</th><th>Quantity</th></tr>
