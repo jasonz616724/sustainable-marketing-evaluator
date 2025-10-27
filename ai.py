@@ -443,21 +443,31 @@ travel_mode = st.sidebar.selectbox(
     key=f"staff_{i}_mode"
 )
 
+# Inside the staff groups loop (for i in range(...)):
 # Show seat class info tooltip for flights
 if travel_mode.startswith("Air -"):
     st.sidebar.caption("ℹ️ Higher seat classes increase carbon emissions due to greater space per passenger.")
-# In the Staff Groups sidebar section (when defining accommodation):
-    accommodation = st.sidebar.selectbox(
-        f"Accommodation Type (Group {i+1})",  # Explicit label
-        ["Budget", "3-star", "4-star", "5-star"], 
-        index=["Budget", "3-star", "4-star", "5-star"].index(default["Accommodation"]), 
-        key=f"staff_{i}_acc"
-    )
-st.sidebar.caption("💡 Budget/3-star = lower emissions | 5-star = higher emissions")  # Clarify impact
-    staff_groups.append({
-        "Staff Count": staff_count, "Departure": departure, "Destination": destination,
-        "Travel Distance (km)": travel_dist, "Travel Mode": travel_mode, "Accommodation": accommodation
-    })
+
+# Define accommodation for the group (properly indented)
+accommodation = st.sidebar.selectbox(
+    f"Accommodation Type (Group {i+1})",  # Explicit label
+    ["Budget", "3-star", "4-star", "5-star"], 
+    index=["Budget", "3-star", "4-star", "5-star"].index(default["Accommodation"]), 
+    key=f"staff_{i}_acc"
+)
+
+# Accommodation impact tooltip (indented to be part of the group loop)
+st.sidebar.caption("💡 Budget/3-star = lower emissions | 5-star = higher emissions")
+
+# Append group data (indented to be part of the loop)
+staff_groups.append({
+    "Staff Count": staff_count, 
+    "Departure": departure, 
+    "Destination": destination,
+    "Travel Distance (km)": travel_dist, 
+    "Travel Mode": travel_mode, 
+    "Accommodation": accommodation
+})
 
 # 5. Materials
 st.sidebar.subheader("📦 Materials")
