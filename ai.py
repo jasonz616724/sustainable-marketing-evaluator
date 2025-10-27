@@ -591,7 +591,7 @@ with col1:
     st.markdown("""
     <style>
     .campaign-name {
-        font-size: 18px !important;  /* Minimum font size */
+        font-size: 28px !important;  /* Minimum font size */
         white-space: normal !important;  /* Allow text wrapping */
     }
     </style>
