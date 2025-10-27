@@ -36,7 +36,7 @@ def generate_ai_response(prompt):
         st.error(f"AI Error: {str(e)}")
         return "Failed to generate response."
 
-print(response.output_text);
+print(response.choices[0].message.content) ;
 
 
 
