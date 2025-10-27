@@ -133,6 +133,50 @@ def extract_pdf_text(uploaded_file):
         st.error(f"⚠️ PDF extraction failed: {str(e)}")
         return ""
 
+def export_to_txt():
+    data = st.session_state["campaign_data"]
+    scores = calculate_sustainability_scores()
+    total_carbon = calculate_total_carbon_emission()
+    mat_impact, recyclable_rate, _ = calculate_material_metrics()
+    
+    # Build content string with all relevant data
+    content = f"Sustainability Report: {data['Campaign Name']}\n"
+    content += f"========================================\n"
+    content += f"Duration: {data['Duration (days)']} days\n"
+    content += f"Local Vendors: {data['Local Vendor %']}%\n\n"
+    
+    content += "Staff Travel:\n"
+    for i, group in enumerate(data['Staff Groups'], 1):
+        content += f"  Group {i}: {group['Staff Count']} people, "
+        content += f"{group['Departure']} → {group['Destination']}, "
+        content += f"{group['Travel Mode']}, {group['Travel Distance (km)']}km\n"
+    
+    content += "\nMaterials:\n"
+    for i, mat in enumerate(data['Materials'], 1):
+        content += f"  Material {i}: {mat['type']}, {mat['quantity']} units, "
+        content += f"Recyclable: {'Yes' if mat.get('custom_recyclable', False) else 'No'}\n"
+    
+    content += "\nSustainability Metrics:\n"
+    content += f"  Total Carbon Emissions: {total_carbon}kg CO₂\n"
+    content += f"  Recyclable Materials: {recyclable_rate}%\n"
+    content += f"  Total Score: {sum(scores.values())}/100\n\n"
+    
+    content += "Recommendations:\n"
+    for i, rec in enumerate(data['ai_recommendations'], 1):
+        content += f"  {i}. {rec}\n"
+    
+    return content
+
+# Add export button in main dashboard
+if st.button("📄 Export as TXT"):
+    txt_content = export_to_txt()
+    st.download_button(
+        label="Download TXT Report",
+        data=txt_content,
+        file_name=f"{st.session_state['campaign_data']['Campaign Name']}_sustainability.txt",
+        mime="text/plain"
+    )
+
 #--- AI-Enhanced Features ---
 def ai_estimate_travel_distance(departure, destination):
     if not departure or not destination or departure.strip().lower() == destination.strip().lower():
@@ -203,14 +247,24 @@ def ai_generate_sustainability_tips():
     4. Reference campaign details (e.g., "Given the 5-day duration, ...")."""
     
     response = get_ai_response(prompt)
-    # Clean and filter recommendations
+    
+    # Clean recommendations to fix numbering issues
     recommendations = []
+    seen = set()
     for line in response.split("\n"):
         line = line.strip()
-        if line and (line.startswith("1.") or line.startswith("2.") or line.startswith("3.")):
-            recommendations.append(line)
-    return recommendations[:3]  # Ensure max 3
+        if not line:
+            continue
+        # Remove existing numbering if present
+        cleaned = line.lstrip("0123456789. ").strip()
+        if cleaned not in seen:
+            seen.add(cleaned)
+            recommendations.append(cleaned)
     
+    # Re-number to ensure 1,2,3
+    return [f"{i+1}. {rec}" for i, rec in enumerate(recommendations[:3])]
+
+
 def ai_analyze_custom_material(material_name):
     # 1. Validate input first (prevent empty requests)
     if not material_name or material_name.strip() == "":
@@ -390,11 +444,21 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+duration = st.sidebar.slider(
+    "Campaign Duration (days)", 
+    min_value=1, 
+    max_value=30, 
+    value=st.session_state["campaign_data"]["Duration (days)"],
+    key="campaign_duration"
+)
+
+# Save duration to session state (add this if missing)
+st.session_state["campaign_data"]["Duration (days)"] = duration
 # 3. Local Vendors
 st.sidebar.subheader("🏘️ Local Vendors")
 local_vendor_pct = st.sidebar.slider("% Local Vendors", 0, 100, st.session_state["campaign_data"]["Local Vendor %"])
 
-# 4. Staff Travel
+# 4. Staff Travel (updated section)
 st.sidebar.subheader("👥 Staff Travel Groups")
 col_add_staff, col_remove_staff = st.sidebar.columns(2)
 with col_add_staff:
@@ -407,83 +471,65 @@ with col_remove_staff:
 staff_groups = []
 for i in range(st.session_state["staff_group_count"]):
     st.sidebar.markdown(f"**Group {i+1}**")
+    # Get default data or create new
     default = st.session_state["campaign_data"]["Staff Groups"][i] if i < len(st.session_state["campaign_data"]["Staff Groups"]) else {
         "Staff Count": 5, "Departure": "City A", "Destination": "City B",
         "Travel Distance (km)": 100, "Travel Mode": "Car", "Accommodation": "3-star"
     }
 
+    # Staff count input
     staff_count = st.sidebar.number_input(f"Staff Count", 1, value=default["Staff Count"], key=f"staff_{i}_count")
+    
+    # Travel locations
     departure = st.sidebar.text_input(f"Departure", default["Departure"], key=f"staff_{i}_dep")
     destination = st.sidebar.text_input(f"Destination", default["Destination"], key=f"staff_{i}_dest")
     
+    # Distance input with AI estimate
     col_dist, col_btn = st.sidebar.columns([3, 2])
     with col_dist:
-        travel_dist = st.sidebar.number_input(f"Distance (km)", 0, value=default["Travel Distance (km)"], key=f"staff_{i}_dist")
+        travel_dist = st.number_input(f"Distance (km)", 0, value=default["Travel Distance (km)"], key=f"staff_{i}_dist")
     with col_btn:
         if st.button("🤖 AI Estimate", key=f"staff_ai_{i}") and OPENAI_AVAILABLE:
             with st.spinner("Estimating..."):
                 estimated = ai_estimate_travel_distance(departure, destination)
                 if estimated:
                     travel_dist = estimated
-                    st.sidebar.success(f"Estimated: {estimated} km")
+                    st.success(f"Estimated: {estimated} km")
 
-    # In the "Staff Travel Groups" section of the sidebar (where travel_mode is selected)
-# Replace the existing travel_mode selectbox with this:
+    # Travel mode selection
+    travel_mode_options = [
+        "Air - Economy", "Air - Premium Economy", 
+        "Air - Business", "Air - First Class",
+        "Train", "Car", "Bus", "Other"
+    ]
+    default_mode = default["Travel Mode"] if default["Travel Mode"] in travel_mode_options else "Air - Economy"
+    travel_mode = st.sidebar.selectbox(
+        f"Travel Mode (Group {i+1})", 
+        travel_mode_options, 
+        index=travel_mode_options.index(default_mode), 
+        key=f"staff_{i}_mode"
+    )
 
-# Expand travel mode options to include flight seat classes
-travel_mode_options = [
-    "Air - Economy", 
-    "Air - Premium Economy", 
-    "Air - Business", 
-    "Air - First Class",
-    "Train", 
-    "Car", 
-    "Bus", 
-    "Other"
-]
+    # Accommodation selection (ENSURED for each group)
+    accommodation_options = ["Budget", "3-star", "4-star", "5-star"]
+    acc_index = accommodation_options.index(default["Accommodation"]) if default["Accommodation"] in accommodation_options else 1
+    accommodation = st.sidebar.selectbox(
+        f"Accommodation (Group {i+1})",
+        accommodation_options,
+        index=acc_index,
+        key=f"staff_{i}_acc"
+    )
+    st.sidebar.caption("💡 Budget/3-star = lower emissions | 5-star = higher emissions")
 
-# Get default mode index (handle old data compatibility)
-default_mode = default["Travel Mode"]
-if default_mode == "Air":  # Convert old "Air" to "Air - Economy" for compatibility
-    default_mode = "Air - Economy"
-try:
-    mode_index = travel_mode_options.index(default_mode)
-except ValueError:
-    mode_index = 0  # Fallback to Economy if mode is unknown
-
-travel_mode = st.sidebar.selectbox(
-    f"Travel Mode (Group {i+1})", 
-    travel_mode_options, 
-    index=mode_index, 
-    key=f"staff_{i}_mode"
-)
-
-# Inside the staff groups loop (for i in range(...)):
-# Show seat class info tooltip for flights
-if travel_mode.startswith("Air -"):
-    st.sidebar.caption("ℹ️ Higher seat classes increase carbon emissions due to greater space per passenger.")
-
-# Define accommodation for the group (properly indented)
-accommodation = st.sidebar.selectbox(
-    f"Accommodation Type (Group {i+1})",  # Explicit label
-    ["Budget", "3-star", "4-star", "5-star"], 
-    index=["Budget", "3-star", "4-star", "5-star"].index(default["Accommodation"]), 
-    key=f"staff_{i}_acc"
-)
-
-# Accommodation impact tooltip (indented to be part of the group loop)
-st.sidebar.caption("💡 Budget/3-star = lower emissions | 5-star = higher emissions")
-
-# Append group data (indented to be part of the loop)
-staff_groups.append({
-    "Staff Count": staff_count, 
-    "Departure": departure, 
-    "Destination": destination,
-    "Travel Distance (km)": travel_dist, 
-    "Travel Mode": travel_mode, 
-    "Accommodation": accommodation
-})
-
+    # Add to groups list
+    staff_groups.append({
+        "Staff Count": staff_count, 
+        "Departure": departure, 
+        "Destination": destination,
+        "Travel Distance (km)": travel_dist, 
+        "Travel Mode": travel_mode, 
+        "Accommodation": accommodation  # NOW INCLUDED FOR EVERY GROUP
+    })
 # 5. Materials
 st.sidebar.subheader("📦 Materials")
 col_add_mat, col_remove_mat = st.sidebar.columns(2)
@@ -674,8 +720,22 @@ if st.session_state["campaign_data"]["ai_recommendations"]:
 
 # 7. PDF Export
 # Replace the PDF Export section with this:
+# Updated Export Section (replace the existing PDF export section)
 st.subheader("📄 Export Report")
-if st.button("Generate Report", use_container_width=True):
+
+# TXT Export (your new function)
+if st.button("📄 Export as TXT", use_container_width=True):
+    txt_content = export_to_txt()
+    st.download_button(
+        label="Download TXT Report",
+        data=txt_content,
+        file_name=f"{st.session_state['campaign_data']['Campaign Name']}_sustainability.txt",
+        mime="text/plain",
+        use_container_width=True
+    )
+
+# PDF Export (existing functionality)
+if st.button("Generate PDF Report", use_container_width=True):
     try:
         # Generate report content via AI
         report_prompt = f"""Create a professional sustainability report for {data['Campaign Name']} with:
@@ -685,11 +745,9 @@ if st.button("Generate Report", use_container_width=True):
         Structure: Title, Executive Summary, Metrics Table, Recommendations, and Next Steps."""
         report_content = get_ai_response(report_prompt, "Write a formal, concise sustainability report.")
 
-        # Try PDF generation first
+        # Try PDF generation
         try:
-            # Check if wkhtmltopdf is installed
             pdfkit.configuration(wkhtmltopdf=pdfkit.from_url('http://google.com', False))  # Test config
-            
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 pdfkit.from_string(report_content, tmp.name)
                 with open(tmp.name, "rb") as f:
@@ -700,18 +758,9 @@ if st.button("Generate Report", use_container_width=True):
                     )
             os.unlink(tmp.name)
         
-        # Fallback to text report if PDF fails
+        # PDF fallback
         except:
-            st.warning("⚠️ wkhtmltopdf not found. Generating text report instead.")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
-                tmp.write(report_content.encode("utf-8"))
-                with open(tmp.name, "rb") as f:
-                    st.download_button(
-                        "Download Text Report", f, 
-                        f"{data['Campaign Name'].replace(' ', '_')}_report.txt",
-                        use_container_width=True
-                    )
-            os.unlink(tmp.name)
+            st.warning("⚠️ wkhtmltopdf not found. Use TXT export instead.")
 
     except Exception as e:
-        st.error(f"Report generation failed: {str(e)}")
+        st.error(f"PDF Report generation failed: {str(e)}")
