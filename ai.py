@@ -135,18 +135,44 @@ def extract_pdf_text(uploaded_file):
 
 #--- AI-Enhanced Features ---
 def ai_estimate_travel_distance(departure, destination):
-    if not departure or not destination or departure == destination:
+    if not departure or not destination or departure.strip().lower() == destination.strip().lower():
+        st.info("ℹ️ Departure and destination are the same or missing—distance set to 0.")
         return 0
     
-    prompt = f"Estimate km between {departure} and {destination} (marketing travel). Return only a number."
-    response = get_ai_response(prompt, "Geography expert: Return only numeric km.")
+    # Strict prompt to avoid commas/units
+    prompt = f"""Estimate the travel distance in kilometers between {departure.strip()} and {destination.strip()}.
+    Return ONLY a raw number (no commas, units like 'km', or extra text). Examples: 870, 1250, 16000.
+    Do NOT add explanations, symbols, or formatting."""
     
     try:
-        return float(response)
-    except:
-        st.warning(f"⚠️ AI distance failed (response: {response[:50]}...). Enter manually.")
+        response = get_ai_response(
+            prompt,
+            system_msg="You are a geography expert. Return ONLY a numeric value (no text, commas, or units)."
+        )
+        response = response.strip()
+    except Exception as e:
+        st.error(f"⚠️ AI Request Failed: {str(e)}")
         return None
+    
+    # --- Key Fix: Clean the response to remove commas and non-numeric characters ---
+    try:
+        # Remove commas, letters, and symbols (keep only numbers and decimals)
+        cleaned_response = response.replace(",", "").replace("km", "").strip()
+        cleaned_response = ''.join([c for c in cleaned_response if c.isdigit() or c == '.'])
         
+        if not cleaned_response:
+            raise ValueError("No valid numbers found in response.")
+        
+        distance = float(cleaned_response)
+        st.success(f"✅ AI Estimated Distance: {distance:.0f} km")
+        return distance
+    
+    except ValueError:
+        st.error(f"⚠️ Could not parse distance. AI response: '{response}'. Use manual input.")
+        return None
+    except Exception as e:
+        st.error(f"⚠️ Error: {str(e)}. AI response: '{response}'")
+        return None
 def ai_extract_pdf_data(pdf_text):
     if not pdf_text:
         return {}
