@@ -520,16 +520,23 @@ if any(m["quantity"] > 0 for m in data["Materials"]):
         if m["quantity"] <= 0:
             continue
         name = m["custom_name"] if m["type"] == "Other (Custom)" else m["type"]
+        
+        # Safely check recyclability
+        if m["type"] == "Other (Custom)":
+            recyclable = m["custom_recyclable"]
+        else:
+            # Find matching predefined material (with fallback)
+            matches = [p for p in PREDEFINED_MATERIALS if p["name"] == m["type"]]
+            recyclable = matches[0]["recyclable"] if matches else False  # Fallback if no match
+        
         mat_data.append({
             "Material": name,
             "Quantity": m["quantity"],
             "Type": m["material_type"],
-            "Recyclable": "✅" if (m["custom_recyclable"] if m["type"] == "Other (Custom)" else 
-                                 [p for p in PREDEFINED_MATERIALS if p["name"] == m["type"]][0]["recyclable"]) else "❌"
+            "Recyclable": "✅" if recyclable else "❌"
         })
     st.dataframe(pd.DataFrame(mat_data), use_container_width=True)
     st.metric("Recyclability Rate", f"{recyclable_rate:.1f}%")
-
 # 5. Scorecard
 st.subheader("📊 Sustainability Scorecard")
 st.metric("Overall Score", f"{total_score}/100")
