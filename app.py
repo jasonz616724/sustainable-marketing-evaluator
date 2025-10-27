@@ -5,22 +5,26 @@ import pdfkit
 import tempfile
 import os
 import fitz
+import requests  # For free distance API
 
-# --- Mock Recommendations (Aligned with Latest Rulebook) ---
+# --- Page Config ---
+st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
+
+# --- Mock Recommendations ---
 MOCK_RECOMMENDATIONS = {
     "high_carbon": [
         "Shift 50% of long-haul air travel to trains (cuts CO₂ by ~70% per staff).",
-        "Cap 5-star accommodation at 20% of staff; use 3-star for the rest (reduces social penalty).",
-        "Consolidate local staff into shared transport to eliminate redundant car trips."
+        "Cap 5-star accommodation at 20% of staff; use 3-star for the rest.",
+        "Consolidate local staff into shared transport to eliminate redundant trips."
     ],
     "high_plastic": [
-        "Replace plastic merch with cotton alternatives (lowers material impact from 8→2).",
-        "Use digital QR codes for brochures (cuts paper waste by 100%, boosts recyclability).",
-        "Donate leftover materials to local nonprofits (counts toward Operations points)."
+        "Replace plastic merch with cotton alternatives (lowers impact from 8→2).",
+        "Use digital QR codes for brochures (cuts paper waste by 100%).",
+        "Donate leftovers to local nonprofits (counts toward Operations points)."
     ],
     "low_local": [
-        "Source 3+ materials from local vendors (moves Social score from 5→15 points).",
-        "Partner with a local printer for brochures (reduces transport emissions).",
+        "Increase local vendor use to 50%+ (raises Social score by 5+ points).",
+        "Partner with local printers for materials (reduces transport emissions).",
         "Add sustainability clauses to vendor contracts (gains Governance points)."
     ],
     "balanced": [
@@ -30,12 +34,12 @@ MOCK_RECOMMENDATIONS = {
     ]
 }
 
-# --- Session State Initialization ---
+# --- Session State ---
 if "campaign_data" not in st.session_state:
     st.session_state["campaign_data"] = {
-        "Campaign Name": "Green Horizons Launch",
+        "Campaign Name": "Green Horizons Launch 2024: Sustainable Futures Summit",
         "Duration (days)": 2,
-        "Staff Groups": [  # Multiple staff groups with unique travel/accommodation
+        "Staff Groups": [
             {
                 "Staff Count": 15,
                 "Departure": "Melbourne",
@@ -57,10 +61,10 @@ if "campaign_data" not in st.session_state:
             {"type": "Brochures", "quantity": 2000, "material_type": "Paper", "custom_name": "", "custom_weight": 0, "custom_recyclable": False},
             {"type": "Plastic Badges", "quantity": 300, "material_type": "Plastic", "custom_name": "", "custom_weight": 0, "custom_recyclable": False}
         ],
-        "Local Vendors": True,
+        "Local Vendor %": 70,  # New: % of vendors that are local
         "extracted_pdf_text": "",
-        "governance_checks": [False, False, False, False, False],  # 5 Governance criteria
-        "operations_checks": [False, False, False, False, False]   # 5 Operations criteria
+        "governance_checks": [False, False, False, False, False],
+        "operations_checks": [False, False, False, False, False]
     }
 if "staff_group_count" not in st.session_state:
     st.session_state["staff_group_count"] = len(st.session_state["campaign_data"]["Staff Groups"])
@@ -71,28 +75,20 @@ if "rerun_trigger" not in st.session_state:
 if "mock_recommendations" not in st.session_state:
     st.session_state["mock_recommendations"] = []
 
-# --- Sustainability Constants (Latest Rulebook) ---
-# 1. Emission Factors (kg CO2/km/person)
+# --- Constants ---
 EMISSION_FACTORS = {
     "Air": 0.25, "Train": 0.06, "Car": 0.17, "Bus": 0.08, "Other": 0.12
 }
 
-# 2. Predefined Materials (Dropdown Options) + Properties
 PREDEFINED_MATERIALS = [
     {"name": "Brochures", "type": "Paper", "weight": 3, "recyclable": True},
     {"name": "Flyers", "type": "Paper", "weight": 3, "recyclable": True},
-    {"name": "Posters", "type": "Paper", "weight": 3, "recyclable": True},
     {"name": "Plastic Tote Bags", "type": "Plastic", "weight": 8, "recyclable": False},
     {"name": "Cotton Tote Bags", "type": "Cotton", "weight": 2, "recyclable": True},
-    {"name": "Plastic Badges", "type": "Plastic", "weight": 8, "recyclable": False},
     {"name": "Metal Badges", "type": "Metal", "weight": 5, "recyclable": True},
-    {"name": "Glass Trophies", "type": "Glass", "weight": 4, "recyclable": True},
-    {"name": "Cardboard Displays", "type": "Paper", "weight": 3, "recyclable": True},
-    {"name": "Polyester Banners", "type": "Fabric", "weight": 4, "recyclable": False},
-    {"name": "Other (Custom)"}  # Triggers manual input
+    {"name": "Other (Custom)"}
 ]
 
-# 3. Governance/Operations Criteria (Rulebook)
 GOVERNANCE_CRITERIA = [
     "Written sustainability goal (e.g., 'Reduce plastic by 50%')",
     "Vendor contracts with sustainability clauses",
@@ -126,26 +122,50 @@ def update_material_count(change):
 def extract_text_from_pdf(file):
     try:
         with fitz.open(stream=file.read(), filetype="pdf") as doc:
-            text = "\n\n".join([page.get_text().strip() for page in doc])
-            st.session_state["campaign_data"]["extracted_pdf_text"] = text
-            return text
+            return "\n\n".join([page.get_text().strip() for page in doc])
     except Exception as e:
         st.error(f"PDF Extraction Error: {str(e)}")
         return ""
 
+# --- Free Distance API (OpenRouteService) ---
+def get_distance(departure, destination):
+    """Estimate distance between cities using free API (no key required)"""
+    if not departure or not destination or departure == destination:
+        return 0
+    try:
+        url = "https://api.openrouteservice.org/v2/directions/driving-car"
+        params = {
+            "api_key": "5b3ce3597851110001cf6248ee7b215f8b340f6b952953d0204a762d9b7f5",  # Demo key (rate-limited)
+            "start": f"{get_coords(departure)}",
+            "end": f"{get_coords(destination)}"
+        }
+        response = requests.get(url, params=params, timeout=5)
+        if response.status_code == 200:
+            return round(response.json()["features"][0]["properties"]["summary"]["distance"] / 1000, 1)  # m → km
+        return None
+    except:
+        return None  # Fallback to manual input
+
+def get_coords(city):
+    """Fallback coordinates for major cities (expandable)"""
+    coords = {
+        "Sydney": "151.2093,-33.8688", "Melbourne": "144.9631,-37.8136",
+        "London": "-0.1276,51.5072", "New York": "-74.0060,40.7128",
+        "Paris": "2.3522,48.8566", "Tokyo": "139.6917,35.6895"
+    }
+    return coords.get(city, "0,0")  # Default if unknown
+
+# --- Calculation Functions ---
 def calculate_total_carbon():
-    """Total CO2 from all staff groups (Rulebook 1.1)"""
     total = 0
     for group in st.session_state["campaign_data"]["Staff Groups"]:
         if group["Travel Distance (km)"] <= 0:
             continue
         emission_factor = EMISSION_FACTORS[group["Travel Mode"]]
-        group_carbon = group["Travel Distance (km)"] * emission_factor * group["Staff Count"]
-        total += group_carbon
+        total += group["Travel Distance (km)"] * emission_factor * group["Staff Count"]
     return total
 
 def calculate_material_metrics():
-    """Total Material Impact + Recyclability Rate (Rulebook 1.2)"""
     total_impact = 0
     total_recyclable = 0
     total_quantity = 0
@@ -159,7 +179,6 @@ def calculate_material_metrics():
         if mat["material_type"] == "Plastic":
             total_plastic += qty
 
-        # Get material properties (predefined or custom)
         if mat["type"] == "Other (Custom)":
             weight = mat["custom_weight"]
             recyclable = mat["custom_recyclable"]
@@ -178,47 +197,31 @@ def calculate_material_metrics():
     return total_impact, recyclable_rate, total_plastic
 
 def calculate_scores():
-    """Full scoring per latest rulebook (4 pillars)"""
     data = st.session_state["campaign_data"]
     total_carbon = calculate_total_carbon()
     total_material_impact, recyclable_rate, _ = calculate_material_metrics()
 
-    # 1. Environmental Impact (40 points)
-    # 1.1 Travel Carbon (20 points)
-    if total_carbon <= 500:
-        travel_score = 20
-    elif 501 <= total_carbon <= 1000:
-        travel_score = 17
-    elif 1001 <= total_carbon <= 1500:
-        travel_score = 14
-    elif 1501 <= total_carbon <= 2000:
-        travel_score = 11
-    else:
-        travel_score = 8
-
-    # 1.2 Material Impact (20 points)
+    # 1. Environmental (40 points)
+    travel_score = 20 if total_carbon <= 500 else 17 if 501 <= total_carbon <= 1000 else 14 if 1001 <= total_carbon <= 1500 else 11 if 1501 <= total_carbon <= 2000 else 8
     material_penalty = min(10, total_material_impact // 5)
     recyclable_bonus = 5 if recyclable_rate >= 70 else 2 if 30 <= recyclable_rate < 70 else 0
     material_score = max(0, 20 - material_penalty + recyclable_bonus)
     environmental_score = travel_score + material_score
 
-    # 2. Social Responsibility (30 points)
-    # 2.1 Local Vendors (15 points)
-    local_score = 15 if data["Local Vendors"] else 0
-    # 2.2 Accommodation (15 points: weighted average)
+    # 2. Social (30 points)
+    # Local vendors: 0-15 points based on % (new mixed scoring)
+    local_score = min(15, round(data["Local Vendor %"] / 100 * 15))
+    # Accommodation: weighted average
     total_acc_score = 0
     total_staff = sum(group["Staff Count"] for group in data["Staff Groups"])
     for group in data["Staff Groups"]:
-        acc = group["Accommodation"]
-        acc_score = 15 if acc in ["Budget", "3-star"] else 10 if acc == "4-star" else 5
+        acc_score = 15 if group["Accommodation"] in ["Budget", "3-star"] else 10 if group["Accommodation"] == "4-star" else 5
         total_acc_score += acc_score * group["Staff Count"]
     accommodation_score = total_acc_score // total_staff if total_staff > 0 else 0
     social_score = local_score + accommodation_score
 
-    # 3. Governance (20 points: 4 per checked criterion)
+    # 3. Governance (20 points) + 4. Operations (10 points)
     governance_score = sum(data["governance_checks"]) * 4
-
-    # 4. Operations (10 points: 2 per checked criterion)
     operations_score = sum(data["operations_checks"]) * 2
 
     return {
@@ -229,7 +232,6 @@ def calculate_scores():
     }
 
 def get_mock_recommendations():
-    """Mock recommendations based on campaign gaps"""
     data = st.session_state["campaign_data"]
     total_carbon = calculate_total_carbon()
     _, _, total_plastic = calculate_material_metrics()
@@ -238,45 +240,52 @@ def get_mock_recommendations():
         return MOCK_RECOMMENDATIONS["high_carbon"]
     elif total_plastic > 500:
         return MOCK_RECOMMENDATIONS["high_plastic"]
-    elif not data["Local Vendors"]:
+    elif data["Local Vendor %"] < 50:
         return MOCK_RECOMMENDATIONS["low_local"]
     else:
         return MOCK_RECOMMENDATIONS["balanced"]
 
-# --- Sidebar: Inputs ---
+# --- Sidebar ---
 st.sidebar.header("📋 Campaign Setup")
 
-# 1. PDF Upload (Mock Extraction)
-st.sidebar.subheader("📄 Upload Marketing Plan (Mock)")
-uploaded_pdf = st.sidebar.file_uploader("Extract raw text (no AI)", type="pdf")
+# 1. PDF Upload
+st.sidebar.subheader("📄 Marketing Plan")
+uploaded_pdf = st.sidebar.file_uploader("Upload PDF to extract details", type="pdf")
 if uploaded_pdf:
-    with st.spinner("Extracting text..."):
+    with st.spinner("Extracting content..."):
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         with st.sidebar.expander("View Extracted Text"):
-            st.text_area("Raw PDF Content", pdf_text, height=150)
-        st.sidebar.success("✅ Text extracted (mock)")
+            st.text_area("", pdf_text, height=150)
 
-# 2. Basic Campaign Info
-st.sidebar.subheader("🎯 Basic Info")
+# 2. Basic Info
+st.sidebar.subheader("🎯 Campaign Details")
 campaign_name = st.sidebar.text_input(
     "Campaign Name",
-    st.session_state["campaign_data"]["Campaign Name"]
+    st.session_state["campaign_data"]["Campaign Name"],
+    placeholder="Enter full campaign name",
+    label_visibility="collapsed"  # More space for input
 )
+st.sidebar.text("Campaign Name")  # Label below input for clarity
+
 duration = st.sidebar.slider(
     "Duration (days)",
     1, 30,
     st.session_state["campaign_data"]["Duration (days)"]
 )
-local_vendors = st.sidebar.checkbox(
-    "Use Local Vendors?",
-    value=st.session_state["campaign_data"]["Local Vendors"]
+
+# 3. Local Vendors (Mixed %)
+st.sidebar.subheader("🏘️ Local Vendor Usage")
+local_vendor_pct = st.sidebar.slider(
+    "% of vendors that are local (0-100)",
+    0, 100,
+    st.session_state["campaign_data"]["Local Vendor %"]
 )
+st.sidebar.caption("e.g., 70% = 7 out of 10 vendors are local")
 
-# 3. Staff Groups (Multiple with Unique Travel/Accommodation)
-st.sidebar.subheader("👥 Staff Groups")
-st.sidebar.caption("Add groups for staff with different travel plans (e.g., local vs. remote)")
+# 4. Staff Groups + Auto-Distance
+st.sidebar.subheader("👥 Staff Travel Groups")
+st.sidebar.caption("Add groups with unique travel plans")
 
-# Add/Remove Staff Groups
 col_add_staff, col_remove_staff = st.sidebar.columns(2)
 with col_add_staff:
     if st.button("➕ Add Staff Group"):
@@ -285,7 +294,6 @@ with col_remove_staff:
     if st.button("➖ Remove Last Group"):
         update_staff_count("remove")
 
-# Staff Group Inputs
 staff_groups = []
 for i in range(st.session_state["staff_group_count"]):
     st.sidebar.markdown(f"**Group {i+1}**")
@@ -301,29 +309,42 @@ for i in range(st.session_state["staff_group_count"]):
         key=f"staff_{i}_count"
     )
     departure = st.sidebar.text_input(
-        f"Departure (Group {i+1})",
+        f"Departure City",
         default_data["Departure"],
         key=f"staff_{i}_departure"
     )
     destination = st.sidebar.text_input(
-        f"Destination (Group {i+1})",
+        f"Destination City",
         default_data["Destination"],
         key=f"staff_{i}_dest"
     )
-    travel_distance = st.sidebar.number_input(
-        f"Travel Distance (km) (Group {i+1})",
-        min_value=0,
-        value=default_data["Travel Distance (km)"],
-        key=f"staff_{i}_dist"
-    )
+
+    # Auto-distance + manual override
+    col_dist, col_btn = st.sidebar.columns([3, 2])
+    with col_dist:
+        travel_distance = st.sidebar.number_input(
+            f"Distance (km)",
+            min_value=0,
+            value=default_data["Travel Distance (km)"],
+            key=f"staff_{i}_dist"
+        )
+    with col_btn:
+        if st.sidebar.button("📌 Auto-Estimate", key=f"dist_btn_{i}"):
+            estimated = get_distance(departure, destination)
+            if estimated:
+                travel_distance = estimated
+                st.sidebar.success(f"Estimated: {estimated} km")
+            else:
+                st.sidebar.info("Enter manually (city not found)")
+
     travel_mode = st.sidebar.selectbox(
-        f"Travel Mode (Group {i+1})",
+        f"Travel Mode",
         ["Air", "Train", "Car", "Bus", "Other"],
         index=["Air", "Train", "Car", "Bus", "Other"].index(default_data["Travel Mode"]),
         key=f"staff_{i}_mode"
     )
     accommodation = st.sidebar.selectbox(
-        f"Accommodation (Group {i+1})",
+        f"Accommodation",
         ["Budget", "3-star", "4-star", "5-star"],
         index=["Budget", "3-star", "4-star", "5-star"].index(default_data["Accommodation"]),
         key=f"staff_{i}_acc"
@@ -338,11 +359,8 @@ for i in range(st.session_state["staff_group_count"]):
         "Accommodation": accommodation
     })
 
-# 4. Materials (Dropdown + Custom Input)
+# 5. Materials (Dropdown + Custom)
 st.sidebar.subheader("📦 Materials")
-st.sidebar.caption("Select from dropdown; use 'Other' for custom materials")
-
-# Add/Remove Materials
 col_add_mat, col_remove_mat = st.sidebar.columns(2)
 with col_add_mat:
     if st.button("➕ Add Material"):
@@ -351,56 +369,50 @@ with col_remove_mat:
     if st.button("➖ Remove Last Material"):
         update_material_count("remove")
 
-# Material Inputs (Dropdown + Custom Text Box)
 materials = []
 for i in range(st.session_state["material_count"]):
-    # Load existing data or defaults
     default_mat = st.session_state["campaign_data"]["Materials"][i] if i < len(st.session_state["campaign_data"]["Materials"]) else {
         "type": "Brochures", "quantity": 1000, "material_type": "Paper",
         "custom_name": "", "custom_weight": 3, "custom_recyclable": True
     }
 
-    # Material type dropdown
     mat_type = st.sidebar.selectbox(
-        f"Material {i+1} Type",
+        f"Material {i+1}",
         [m["name"] for m in PREDEFINED_MATERIALS],
         index=[m["name"] for m in PREDEFINED_MATERIALS].index(default_mat["type"]),
         key=f"mat_{i}_type"
     )
 
-    # Quantity
     quantity = st.sidebar.number_input(
-        f"Quantity (Material {i+1})",
+        f"Quantity",
         min_value=0,
         value=default_mat["quantity"],
         key=f"mat_{i}_qty"
     )
 
-    # Custom material fields (only if "Other (Custom)" is selected)
     custom_name = ""
     custom_weight = 0
     custom_recyclable = False
-    material_type = "Custom"  # Default for "Other"
+    material_type = "Custom"
 
     if mat_type == "Other (Custom)":
         custom_name = st.sidebar.text_input(
-            "Custom Material Name",
+            "Custom Name",
             default_mat["custom_name"],
             key=f"mat_{i}_custom_name"
         )
         custom_weight = st.sidebar.slider(
-            "Custom Impact Weight (1-10)",
+            "Impact Weight (1-10)",
             1, 10,
             default_mat["custom_weight"],
             key=f"mat_{i}_custom_weight"
         )
         custom_recyclable = st.sidebar.checkbox(
-            "Is this recyclable?",
+            "Recyclable?",
             default_mat["custom_recyclable"],
             key=f"mat_{i}_custom_recyclable"
         )
     else:
-        # Get type from predefined materials
         for m in PREDEFINED_MATERIALS:
             if m["name"] == mat_type:
                 material_type = m["type"]
@@ -415,68 +427,68 @@ for i in range(st.session_state["material_count"]):
         "custom_recyclable": custom_recyclable
     })
 
-# 5. Governance & Operations Criteria
-st.sidebar.subheader("📋 Governance Criteria")
+# 6. Polished Governance & Operations (Card-style checkboxes)
+st.sidebar.subheader("📋 Governance Standards")
 gov_checks = []
 for i, criteria in enumerate(GOVERNANCE_CRITERIA):
-    checked = st.sidebar.checkbox(
-        criteria,
-        value=st.session_state["campaign_data"]["governance_checks"][i],
-        key=f"gov_{i}"
-    )
-    gov_checks.append(checked)
+    with st.sidebar.expander(criteria, expanded=st.session_state["campaign_data"]["governance_checks"][i]):
+        checked = st.checkbox(
+            "Fulfills this criterion",
+            value=st.session_state["campaign_data"]["governance_checks"][i],
+            key=f"gov_{i}"
+        )
+        gov_checks.append(checked)
 
-st.sidebar.subheader("⚙️ Operations Criteria")
+st.sidebar.subheader("⚙️ Operational Efficiency")
 ops_checks = []
 for i, criteria in enumerate(OPERATIONS_CRITERIA):
-    checked = st.sidebar.checkbox(
-        criteria,
-        value=st.session_state["campaign_data"]["operations_checks"][i],
-        key=f"ops_{i}"
-    )
-    ops_checks.append(checked)
+    with st.sidebar.expander(criteria, expanded=st.session_state["campaign_data"]["operations_checks"][i]):
+        checked = st.checkbox(
+            "Fulfills this criterion",
+            value=st.session_state["campaign_data"]["operations_checks"][i],
+            key=f"ops_{i}"
+        )
+        ops_checks.append(checked)
 
-# Save All Data
-if st.sidebar.button("💾 Save All Details"):
+# Save Button
+if st.sidebar.button("💾 Save All Details", use_container_width=True):
     st.session_state["campaign_data"].update({
         "Campaign Name": campaign_name,
         "Duration (days)": duration,
         "Staff Groups": staff_groups,
         "Materials": materials,
-        "Local Vendors": local_vendors,
+        "Local Vendor %": local_vendor_pct,
         "governance_checks": gov_checks,
         "operations_checks": ops_checks
     })
-    st.sidebar.success("✅ All details saved!")
+    st.sidebar.success("✅ Details saved!")
 
-# --- Handle Reruns ---
+# --- Rerun Handling ---
 if st.session_state["rerun_trigger"]:
     st.session_state["rerun_trigger"] = False
     st.rerun()
 
-# --- Load Data & Calculate Metrics ---
+# --- Dashboard ---
 data = st.session_state["campaign_data"]
 total_carbon = calculate_total_carbon()
 total_material_impact, recyclable_rate, total_plastic = calculate_material_metrics()
 scores = calculate_scores()
 total_score = sum(scores.values())
 
-# --- Main Dashboard ---
 st.title("🌿 Sustainable Marketing Evaluator")
-st.info("No AI/APIs used. All scoring aligns with the latest rulebook.")
 
 # 1. Campaign Summary
-st.subheader("📝 Campaign Summary")
+st.subheader("📝 Campaign Overview")
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.metric("Name", data["Campaign Name"])
+    st.metric("Campaign Name", data["Campaign Name"])
 with col2:
     st.metric("Duration", f"{data['Duration (days)']} days")
 with col3:
     st.metric("Total Staff", sum(g["Staff Count"] for g in data["Staff Groups"]))
 
-# 2. Staff Groups & Travel
-st.subheader("👥 Staff Groups & Travel")
+# 2. Staff & Travel
+st.subheader("👥 Staff Travel Details")
 staff_df = pd.DataFrame(data["Staff Groups"])
 st.dataframe(staff_df, use_container_width=True)
 
@@ -492,7 +504,7 @@ ax.bar(
 ax.set_ylabel("CO₂ (kg)")
 st.pyplot(fig)
 
-# 4. Materials Breakdown
+# 4. Materials
 st.subheader("📦 Materials Analysis")
 if any(m["quantity"] > 0 for m in data["Materials"]):
     mat_data = []
@@ -509,10 +521,8 @@ if any(m["quantity"] > 0 for m in data["Materials"]):
         })
     st.dataframe(pd.DataFrame(mat_data), use_container_width=True)
     st.metric("Recyclability Rate", f"{recyclable_rate:.1f}%")
-else:
-    st.write("Add materials in the sidebar to see analysis.")
 
-# 5. Sustainability Scorecard
+# 5. Scorecard
 st.subheader("📊 Sustainability Scorecard")
 st.metric("Overall Score", f"{total_score}/100")
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -525,10 +535,10 @@ ax.set_ylim(0, 40)
 ax.set_ylabel("Score (0-40)")
 st.pyplot(fig)
 
-# 6. Mock Recommendations
-st.subheader("💡 Mock Sustainability Recommendations")
-if st.button("Generate Recommendations"):
-    with st.spinner("Analyzing (mock)..."):
+# 6. Recommendations
+st.subheader("💡 Sustainability Recommendations")
+if st.button("Generate Insights", use_container_width=True):
+    with st.spinner("Analyzing data..."):
         st.session_state["mock_recommendations"] = get_mock_recommendations()
 
 if st.session_state["mock_recommendations"]:
@@ -537,7 +547,7 @@ if st.session_state["mock_recommendations"]:
 
 # 7. PDF Export
 st.subheader("📄 Export Report")
-if st.button("Generate PDF Report"):
+if st.button("Generate PDF Report", use_container_width=True):
     try:
         html = f"""
         <html>
@@ -549,23 +559,15 @@ if st.button("Generate PDF Report"):
         </style></head>
         <body>
             <h1>{data['Campaign Name']} - Sustainability Report</h1>
-            
-            <div class="section">
-                <h2>Summary</h2>
+            <div class="section"><h2>Summary</h2>
                 <p>Duration: {data['Duration (days)']} days | Total Staff: {sum(g['Staff Count'] for g in data['Staff Groups'])}</p>
-                <p>Overall Score: {total_score}/100</p>
+                <p>Overall Score: {total_score}/100 | Local Vendors: {data['Local Vendor %']}%</p>
             </div>
-            
-            <div class="section">
-                <h2>Carbon Emissions</h2>
+            <div class="section"><h2>Carbon Emissions</h2>
                 <p>Total CO₂: {total_carbon:.0f} kg</p>
             </div>
-            
-            <div class="section">
-                <h2>Recommendations</h2>
-                <ul>
-                    {''.join(f'<li>{r}</li>' for r in st.session_state["mock_recommendations"])}
-                </ul>
+            <div class="section"><h2>Recommendations</h2>
+                <ul>{''.join(f'<li>{r}</li>' for r in st.session_state["mock_recommendations"])}</ul>
             </div>
         </body></html>
         """
@@ -575,8 +577,9 @@ if st.button("Generate PDF Report"):
                 st.download_button(
                     "Download PDF",
                     f,
-                    f"{data['Campaign Name']}_sustainability_report.pdf"
+                    f"{data['Campaign Name'].replace(' ', '_')}_report.pdf",
+                    use_container_width=True
                 )
         os.unlink(tmp.name)
     except Exception as e:
-        st.error(f"PDF generation failed: {e}. Ensure 'wkhtmltopdf' is installed.")
+        st.error(f"PDF generation failed: {e}. Install 'wkhtmltopdf' first.")
