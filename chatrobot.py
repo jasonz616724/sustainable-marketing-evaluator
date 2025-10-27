@@ -73,13 +73,28 @@ def get_ai_response(prompt, system_msg="You are a helpful assistant."):
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
-            temperature=0.6,
+            temperature=0.4,  # Lower temp for more consistent factual responses
             timeout=15
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         st.error(f"⚠️ AI error: {str(e)}")
         return "❌ AI response failed. Try again."
+
+# Enhanced distance estimation function
+def estimate_distance(departure, destination):
+    if not OPENAI_AVAILABLE or not departure or not destination:
+        return None
+        
+    prompt = f"""Estimate the travel distance in kilometers between {departure} and {destination}.
+    Consider the most common travel route between these locations.
+    Return ONLY a numeric value (no units, no explanations). If you can't estimate, return 0."""
+    
+    try:
+        response = get_ai_response(prompt, "You are a geography expert specializing in travel distances. Return only numbers.")
+        return float(response) if response and response.replace('.', '', 1).isdigit() else None
+    except:
+        return None
 
 def extract_campaign_details(user_input):
     prompt = f"""Extract these fields from the input:
@@ -98,7 +113,7 @@ def extract_travel_details(user_input):
     - staff_count (number)
     - departure (location)
     - destination (location)
-    - distance_km (number)
+    - distance_km (number, if provided)
     - travel_mode (choose from: {', '.join(EMISSION_FACTORS.keys())})
     - accommodation (Budget, 3-star, 4-star, 5-star)
     
@@ -129,7 +144,7 @@ def extract_checks(user_input, criteria_type):
     
     return json.loads(get_ai_response(prompt, "Evaluate criteria. Return only JSON array."))
 
-# --- Calculation Functions (Unchanged) ---
+# --- Calculation Functions ---
 def calculate_total_carbon_emission():
     total_emission = 0
     for group in st.session_state["campaign_data"]["Staff Groups"]:
@@ -229,32 +244,53 @@ def process_step(step, user_input):
             missing.append("local vendor percentage (0-100)")
 
         if not missing:
-            response = "Thanks! Next, tell me about staff travel. For each group (teams from same origin), include:\n- Number of staff\n- Departure/destination locations\n- Travel distance (km)\n- Travel mode (Air Economy, Train, Car, etc.)\n- Accommodation type (Budget, 3-star, 4-star, 5-star)"
+            response = "Thanks! Next, tell me about staff travel. For each group (teams from same origin), include:\n- Number of staff\n- Departure/destination locations\n- Travel mode (Air Economy, Train, Car, etc.)\n- Accommodation type (Budget, 3-star, 4-star, 5-star)\nI'll estimate distances automatically if you don't provide them!"
             st.session_state["current_step"] = 2
         else:
             response = f"Could you provide: {', '.join(missing)}?"
 
-    elif step == 2:  # Staff travel info
+    elif step == 2:  # Staff travel info with distance estimation
         travel_groups = extract_travel_details(user_input) if OPENAI_AVAILABLE else []
         valid_groups = []
+        estimation_notes = []
         
         for i, group in enumerate(travel_groups, 1):
-            if all(k in group for k in ["staff_count", "departure", "destination", "distance_km", "travel_mode", "accommodation"]):
-                valid_groups.append({
-                    "Staff Count": int(group["staff_count"]),
-                    "Departure": group["departure"],
-                    "Destination": group["destination"],
-                    "Travel Distance (km)": float(group["distance_km"]),
-                    "Travel Mode": group["travel_mode"],
-                    "Accommodation": group["accommodation"]
-                })
+            # Check for required base fields
+            if not all(k in group for k in ["staff_count", "departure", "destination", "travel_mode", "accommodation"]):
+                estimation_notes.append(f"Group {i} is missing basic information (staff count, locations, travel mode, or accommodation)")
+                continue
+
+            # Handle distance - use provided if available, estimate if missing
+            distance = group.get("distance_km")
+            if distance is None or not isinstance(distance, (int, float)) or distance <= 0:
+                # Attempt AI estimation
+                estimated = estimate_distance(group["departure"], group["destination"])
+                if estimated and estimated > 0:
+                    distance = estimated
+                    estimation_notes.append(f"Estimated distance for Group {i} ({group['departure']} to {group['destination']}): {distance} km")
+                else:
+                    estimation_notes.append(f"Could not estimate distance for Group {i} - please provide it")
+                    continue  # Skip group if we can't get distance
+            
+            # Add valid group
+            valid_groups.append({
+                "Staff Count": int(group["staff_count"]),
+                "Departure": group["departure"],
+                "Destination": group["destination"],
+                "Travel Distance (km)": float(distance),
+                "Travel Mode": group["travel_mode"],
+                "Accommodation": group["accommodation"]
+            })
 
         if valid_groups:
             data["Staff Groups"] = valid_groups
-            response = "Got it! Now materials. List each type with quantity. Options: Brochures, Flyers, Plastic Tote Bags, Cotton Tote Bags, Metal Badges, or Custom (specify name)."
+            response = "Got it! "
+            if estimation_notes:
+                response += "\n".join(estimation_notes) + "\n\n"
+            response += "Now materials. List each type with quantity. Options: Brochures, Flyers, Plastic Tote Bags, Cotton Tote Bags, Metal Badges, or Custom (specify name)."
             st.session_state["current_step"] = 3
         else:
-            response = "I didn't catch valid travel details. Please include for each group: staff count, departure, destination, distance, travel mode, and accommodation."
+            response = "I didn't get valid travel details. Please include for each group: staff count, departure, destination, travel mode, and accommodation."
 
     elif step == 3:  # Materials info
         materials = extract_material_details(user_input) if OPENAI_AVAILABLE else []
