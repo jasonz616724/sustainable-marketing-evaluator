@@ -15,7 +15,7 @@ st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
 AI_API_ENDPOINT = "https://api.openai.com/v1/chat/completions"  # Replace with your endpoint
 # API key fetched from Streamlit secrets (never hardcoded)
 try:
-    AI_API_KEY = st.secrets["AI_API_KEY"]
+    AI_API_KEY = st.secrets["OPENAI_API_KEY"]
 except KeyError:
     st.warning("API key not found in secrets. Some AI features may be limited.")
     AI_API_KEY = None
