@@ -334,7 +334,8 @@ def calculate_sustainability_scores():
     for group in data["Staff Groups"]:
         total_acc_score += acc_score_map[group["Accommodation"]] * group["Staff Count"]
     accommodation_score = total_acc_score // total_staff if total_staff > 0 else 0
-    social_score = local_score + acc_score
+    # Fixed the variable name from acc_score to accommodation_score
+    social_score = local_score + accommodation_score
 
     # Governance (20 pts) + Operations (10 pts)
     gov_score = sum(data["governance_checks"]) * 4
