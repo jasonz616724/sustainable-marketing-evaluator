@@ -4,6 +4,4 @@ pandas
 matplotlib
 pdfkit
 PyMuPDF
-requests
-datetime
-tempfile
+
