@@ -583,12 +583,18 @@ total_score = sum(scores.values())
 st.title("🌿 Sustainable Marketing Evaluator")
 
 # 1. Overview
+# In the "Main Dashboard" section where the campaign overview is displayed
 st.subheader("📝 Campaign Overview")
-col1, col2, col3 = st.columns(3)
-with col1: st.metric("Name", data["Campaign Name"])
-with col2: st.metric("Duration", f"{data['Duration (days)']} days")
-with col3: st.metric("Total Staff", sum(g["Staff Count"] for g in data["Staff Groups"]))
-
+# Use a wider column for the campaign name to allow more space
+col1, col2, col3 = st.columns([2, 1, 1])  # Give more width to the first column
+with col1:
+    # Use a text element instead of metric for better wrapping
+    st.markdown(f"**Name:** {data['Campaign Name']}")
+with col2:
+    st.metric("Duration", f"{data['Duration (days)']} days")
+with col3:
+    st.metric("Total Staff", sum(g["Staff Count"] for g in data["Staff Groups"]))
+    
 # 2. Staff Travel
 st.subheader("👥 Staff Travel Details")
 st.dataframe(pd.DataFrame(data["Staff Groups"]), use_container_width=True)
