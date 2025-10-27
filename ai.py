@@ -7,6 +7,10 @@ import os
 import fitz
 import requests  # For API calls
 from datetime import datetime
+import time
+
+time.sleep(2)  # wait 2 seconds between calls
+
 
 # --- Page Config ---
 st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
