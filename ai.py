@@ -583,18 +583,26 @@ total_score = sum(scores.values())
 st.title("🌿 Sustainable Marketing Evaluator")
 
 # 1. Overview
-# In the "Main Dashboard" section where the campaign overview is displayed
+
 st.subheader("📝 Campaign Overview")
-# Use a wider column for the campaign name to allow more space
-col1, col2, col3 = st.columns([2, 1, 1])  # Give more width to the first column
+col1, col2, col3 = st.columns([2, 1, 1])  # Wider column for name
 with col1:
-    # Use a text element instead of metric for better wrapping
-    st.markdown(f"**Name:** {data['Campaign Name']}")
+    # Add custom CSS to ensure minimum font size
+    st.markdown("""
+    <style>
+    .campaign-name {
+        font-size: 18px !important;  /* Minimum font size */
+        white-space: normal !important;  /* Allow text wrapping */
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    # Use the custom class for the campaign name
+    st.markdown(f'<p class="campaign-name"><strong>Name:</strong> {st.session_state["campaign_data"]["Campaign Name"]}</p>', 
+                unsafe_allow_html=True)
 with col2:
-    st.metric("Duration", f"{data['Duration (days)']} days")
+    st.metric("Duration", f"{st.session_state['campaign_data']['Duration (days)']} days")
 with col3:
-    st.metric("Total Staff", sum(g["Staff Count"] for g in data["Staff Groups"]))
-    
+    st.metric("Total Staff", sum(g["Staff Count"] for g in st.session_state["campaign_data"]["Staff Groups"]))
 # 2. Staff Travel
 st.subheader("👥 Staff Travel Details")
 st.dataframe(pd.DataFrame(data["Staff Groups"]), use_container_width=True)
