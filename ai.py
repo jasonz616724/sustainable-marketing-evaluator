@@ -8,8 +8,38 @@ import fitz
 import requests  # For API calls
 from datetime import datetime
 import time
+from openai import OpenAI
 
 time.sleep(2)  # wait 2 seconds between calls
+
+# Initialize the OpenAI client with your API key
+client = OpenAI(
+    api_key=st.secrets.get("OPENAI_API_KEY")  # Use Streamlit secrets (never hardcode!)
+)
+
+def generate_ai_response(prompt):
+    """Generate a response from GPT-5-nano using OpenAI's API."""
+    try:
+        # Call the chat completions endpoint (correct method for chat models)
+        response = client.chat.completions.create(
+            model="gpt-5-nano",  # Your model name
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},  # System prompt
+                {"role": "user", "content": prompt}  # User input/prompt
+            ],
+            # Note: OpenAI does NOT support "store=True" – remove this parameter
+            temperature=0.7  # Optional: Controls randomness (0=deterministic, 1=creative)
+        )
+        # Extract the AI's response from the API result
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"AI Error: {str(e)}")
+        return "Failed to generate response."
+
+print(response.output_text);
+
+
+
 
 
 # --- Page Config ---
@@ -118,7 +148,7 @@ def ai_estimate_distance(departure, destination):
         return 0
     prompt = f"""Estimate the distance in kilometers between {departure} and {destination} for a marketing campaign. 
     Return ONLY the numeric distance (no extra text). Example: 870"""
-    response = ai_api_call(prompt)
+    ######response = ai_api_call(prompt)
     try:
         return float(response["choices"][0]["message"]["content"].strip())
     except:
@@ -139,7 +169,7 @@ def ai_analyze_pdf(pdf_text):
     Text: {pdf_text[:2000]}  # Truncated for token efficiency
     
     Return as a JSON with keys: duration, staff_count, materials, local_vendor_pct, travel_cities."""
-    response = ai_api_call(prompt)
+    #####response = ai_api_call(prompt)
     try:
         import json
         return json.loads(response["choices"][0]["message"]["content"])
@@ -148,24 +178,29 @@ def ai_analyze_pdf(pdf_text):
         return {}
 
 def ai_generate_recommendations():
-    """AI generates tailored sustainability recommendations (rulebook-aligned)."""
+    """Generate sustainability recommendations using GPT-5-nano."""
     data = st.session_state["campaign_data"]
     scores = calculate_scores()
-    prompt = f"""Generate 3 sustainability recommendations for a marketing campaign using these details:
-    - Total score: {sum(scores.values())}/100 (Environmental: {scores['Environmental Impact']}, Social: {scores['Social Responsibility']})
-    - Carbon emissions: {calculate_total_carbon()} kg
-    - Materials: {[m['type'] for m in data['Materials']]}
-    - Local vendors: {data['Local Vendor %']}%
-    - Staff travel: {[f"{g['Departure']}→{g['Destination']}" for g in data['Staff Groups']]}
     
-    Follow these rules:
-    1. Prioritize fixes for lowest-scoring pillars.
-    2. Reference impact weights from the rulebook (e.g., plastic=8, cotton=2).
-    3. Include specific metrics (e.g., "cuts CO2 by 30%").
+    # Build a prompt with campaign details
+    prompt = f"""Generate 3 sustainability recommendations for this marketing campaign:
+    - Total score: {sum(scores.values())}/100
+    - Carbon emissions: {calculate_total_carbon()} kg
+    - Materials used: {[m['type'] for m in data['Materials']]}
+    - Local vendors: {data['Local Vendor %']}%
+    
+    Focus on fixing low-scoring areas and reference these impact weights:
+    - Plastic materials: weight 8
+    - Cotton materials: weight 2
+    - Paper materials: weight 3
     """
-    response = ai_api_call(prompt)
-    return [rec.strip() for rec in response["choices"][0]["message"]["content"].split("-") if rec.strip()]
-
+    
+    # Call the corrected AI function
+    ai_response = generate_ai_response(prompt)
+    
+    # Format the response into a list of recommendations
+    return [rec.strip() for rec in ai_response.split("-") if rec.strip()]
+    
 def ai_estimate_material_impact(material_name):
     """AI estimates impact weight/recyclability for custom materials (rulebook-aligned)."""
     if not material_name:
@@ -179,7 +214,7 @@ def ai_estimate_material_impact(material_name):
     - Plastic badges: weight 8, recyclable=No
     
     Return ONLY as "weight: X, recyclable: Y" (no extra text)."""
-    response = ai_api_call(prompt)
+    ####response = ai_api_call(prompt)
     try:
         content = response["choices"][0]["message"]["content"]
         weight = int(content.split("weight: ")[1].split(",")[0])
