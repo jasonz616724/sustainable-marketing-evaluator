@@ -376,12 +376,20 @@ for i in range(st.session_state["material_count"]):
         "custom_name": "", "custom_weight": 3, "custom_recyclable": True
     }
 
+    # Fix: Safely get default index
+    mat_type_options = [m["name"] for m in PREDEFINED_MATERIALS]
+    try:
+        default_index = mat_type_options.index(default_mat["type"])
+    except ValueError:
+        default_index = 0  # Fallback to first option
+
     mat_type = st.sidebar.selectbox(
         f"Material {i+1}",
-        [m["name"] for m in PREDEFINED_MATERIALS],
-        index=[m["name"] for m in PREDEFINED_MATERIALS].index(default_mat["type"]),
+        mat_type_options,
+        index=default_index,
         key=f"mat_{i}_type"
     )
+
 
     quantity = st.sidebar.number_input(
         f"Quantity",
