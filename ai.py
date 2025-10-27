@@ -11,9 +11,14 @@ from datetime import datetime
 # --- Page Config ---
 st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
 
-# --- Mock ChatGPT-5 API Configuration (Replace with real endpoint) ---
-AI_API_ENDPOINT = "https://api.openai.com/v1/chat/completions"  # Mock endpoint
-AI_API_KEY = st.secrets.get("AI_API_KEY", "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")  # Store in Streamlit secrets
+# --- ChatGPT-5 API Configuration (No hardcoded key) ---
+AI_API_ENDPOINT = "https://api.openai.com/v1/chat/completions"  # Replace with your endpoint
+# API key fetched from Streamlit secrets (never hardcoded)
+try:
+    AI_API_KEY = st.secrets["AI_API_KEY"]
+except KeyError:
+    st.warning("API key not found in secrets. Some AI features may be limited.")
+    AI_API_KEY = None
 
 # --- Session State ---
 if "campaign_data" not in st.session_state:
@@ -39,7 +44,7 @@ if "campaign_data" not in st.session_state:
         "governance_checks": [False, False, False, False, False],
         "operations_checks": [False, False, False, False, False],
         "ai_recommendations": [],
-        "ai_material_analysis": {}  # For custom material impact estimates
+        "ai_material_analysis": {}
     }
 if "staff_group_count" not in st.session_state:
     st.session_state["staff_group_count"] = len(st.session_state["campaign_data"]["Staff Groups"])
@@ -77,35 +82,34 @@ OPERATIONS_CRITERIA = [
     "Accommodation near venue (walking/transit)"
 ]
 
-# --- AI Helper Functions (ChatGPT-5 Integration) ---
+# --- AI Helper Functions (Secure API Calls) ---
 def ai_api_call(prompt, system_message="You are a sustainability analyst for marketing campaigns."):
-    """Mock/pseudo API call to ChatGPT-5. Replace with real API logic."""
+    """Secure API call to ChatGPT-5 (uses secrets for key)."""
+    if not AI_API_KEY:
+        return {"choices": [{"message": {"content": "AI features require an API key (add to secrets)."}}]}
+    
     try:
-        # Real API would use: requests.post(AI_API_ENDPOINT, headers=..., json=...)
-        # This is a mock response simulating GPT-5 output
-        return {
-            "choices": [{"message": {"content": mock_ai_response(prompt, system_message)}}]
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {AI_API_KEY}"  # Key from secrets, not hardcoded
         }
+        payload = {
+            "model": "gpt-5",  # Replace with your model name
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        response = requests.post(AI_API_ENDPOINT, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()  # Raise error for 4xx/5xx responses
+        return response.json()
     except Exception as e:
         st.error(f"AI API Error: {str(e)}")
-        return {"choices": [{"message": {"content": "Error: Could not generate AI response."}}]}
-
-def mock_ai_response(prompt, system_message):
-    """Simulates GPT-5 output for testing. Replace with real API response parsing."""
-    if "estimate distance" in prompt.lower():
-        return "The estimated distance between Melbourne and Sydney is 870 km."
-    elif "analyze pdf" in prompt.lower():
-        return "The PDF mentions a 3-day campaign with 20 staff, using plastic banners and local catering (60% local vendors)."
-    elif "recommend sustainability improvements" in prompt.lower():
-        return "- Switch 50% of air travel to high-speed rail to cut CO2 by 70%.\n- Replace plastic banners with recyclable fabric (impact weight 4 vs 8).\n- Increase local vendor usage to 80% to boost social score by 3 points."
-    elif "estimate material impact" in prompt.lower():
-        return "Hemp tote bags have a low impact (weight 2) and are fully recyclable. Based on your rulebook, this aligns with 'Cotton' category equivalents."
-    else:
-        return "AI analysis complete. No critical issues found."
+        return {"choices": [{"message": {"content": "Failed to connect to AI service."}}]}
 
 # --- Core AI-Powered Features ---
 def ai_estimate_distance(departure, destination):
-    """Use GPT-5 to estimate distance between cities (with rulebook context)."""
+    """AI-powered distance estimation between cities."""
     if not departure or not destination or departure == destination:
         return 0
     prompt = f"""Estimate the distance in kilometers between {departure} and {destination} for a marketing campaign. 
@@ -118,7 +122,7 @@ def ai_estimate_distance(departure, destination):
         return None
 
 def ai_analyze_pdf(pdf_text):
-    """Use GPT-5 to extract campaign details from PDF (populates form fields)."""
+    """AI extracts campaign details from PDF to auto-populate forms."""
     if not pdf_text:
         return {}
     prompt = f"""Analyze this marketing campaign PDF text and extract:
@@ -128,7 +132,7 @@ def ai_analyze_pdf(pdf_text):
     - Local vendor percentage
     - Travel cities (departure/destination)
     
-    Text: {pdf_text[:2000]}  # Truncate to avoid token limits
+    Text: {pdf_text[:2000]}  # Truncated for token efficiency
     
     Return as a JSON with keys: duration, staff_count, materials, local_vendor_pct, travel_cities."""
     response = ai_api_call(prompt)
@@ -140,7 +144,7 @@ def ai_analyze_pdf(pdf_text):
         return {}
 
 def ai_generate_recommendations():
-    """Use GPT-5 to generate tailored recommendations (aligned with rulebook)."""
+    """AI generates tailored sustainability recommendations (rulebook-aligned)."""
     data = st.session_state["campaign_data"]
     scores = calculate_scores()
     prompt = f"""Generate 3 sustainability recommendations for a marketing campaign using these details:
@@ -159,7 +163,7 @@ def ai_generate_recommendations():
     return [rec.strip() for rec in response["choices"][0]["message"]["content"].split("-") if rec.strip()]
 
 def ai_estimate_material_impact(material_name):
-    """Use GPT-5 to estimate impact weight/recyclability for custom materials (rulebook-aligned)."""
+    """AI estimates impact weight/recyclability for custom materials (rulebook-aligned)."""
     if not material_name:
         return (5, False)  # Default
     prompt = f"""Estimate the sustainability impact of "{material_name}" for a marketing campaign using this rulebook:
@@ -229,7 +233,6 @@ def calculate_material_metrics():
             total_plastic += qty
 
         if m["type"] == "Other (Custom)":
-            # Use AI-estimated impact if available, else default
             weight = m["custom_weight"] if m["custom_weight"] != 0 else 5
             recyclable = m["custom_recyclable"]
         else:
@@ -294,7 +297,6 @@ if uploaded_pdf:
         pdf_analysis = ai_analyze_pdf(pdf_text)
         if pdf_analysis:
             st.sidebar.success("AI populated form fields from PDF!")
-            # Update session state with AI-extracted data (example fields)
             if "duration" in pdf_analysis:
                 st.session_state["campaign_data"]["Duration (days)"] = pdf_analysis["duration"]
             if "local_vendor_pct" in pdf_analysis:
