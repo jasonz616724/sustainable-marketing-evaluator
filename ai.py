@@ -57,7 +57,19 @@ if "rerun_trigger" not in st.session_state:
     st.session_state["rerun_trigger"] = False
 
 # --- Constants ---
-EMISSION_FACTORS = {"Air": 0.25, "Train": 0.06, "Car": 0.17, "Bus": 0.08, "Other": 0.12}
+
+EMISSION_FACTORS = {
+    # Flight seat classes (most accurate per IATA data)
+    "Air - Economy": 0.25,
+    "Air - Premium Economy": 0.35,
+    "Air - Business": 0.60,
+    "Air - First Class": 0.90,
+    # Other travel modes (unchanged)
+    "Train": 0.06,
+    "Car": 0.17,
+    "Bus": 0.08,
+    "Other": 0.12
+}
 PREDEFINED_MATERIALS = [
     {"name": "Brochures", "type": "Paper", "weight": 3, "recyclable": True},
     {"name": "Flyers", "type": "Paper", "weight": 3, "recyclable": True},
@@ -121,7 +133,7 @@ def extract_pdf_text(uploaded_file):
         st.error(f"⚠️ PDF extraction failed: {str(e)}")
         return ""
 
-# --- AI-Enhanced Features ---
+--- AI-Enhanced Features ---
 def ai_estimate_travel_distance(departure, destination):
     if not departure or not destination or departure == destination:
         return 0
@@ -134,7 +146,7 @@ def ai_estimate_travel_distance(departure, destination):
     except:
         st.warning(f"⚠️ AI distance failed (response: {response[:50]}...). Enter manually.")
         return None
-
+        
 def ai_extract_pdf_data(pdf_text):
     if not pdf_text:
         return {}
@@ -216,15 +228,26 @@ def ai_analyze_custom_material(material_name):
         
 # --- Calculation Functions ---
 def calculate_total_carbon_emission():
-    total = 0
+    """Calculate total CO₂ emissions, with flight seat class differentiation."""
+    total_emission = 0
     for group in st.session_state["campaign_data"]["Staff Groups"]:
         distance = group["Travel Distance (km)"]
         if distance <= 0:
             continue
-        factor = EMISSION_FACTORS.get(group["Travel Mode"], 0.12)
-        total += distance * factor * group["Staff Count"]
-    return round(total, 1)
-
+        
+        # Get emission factor (automatically uses seat class for flights)
+        travel_mode = group["Travel Mode"]
+        emission_factor = EMISSION_FACTORS.get(travel_mode, 0.12)  # Default to "Other"
+        
+        # Calculate emissions for the group
+        group_emissions = distance * emission_factor * group["Staff Count"]
+        total_emission += group_emissions
+        
+        # Optional: Show breakdown per group (for transparency)
+        # st.write(f"Group Emissions ({travel_mode}): {group_emissions:.1f} kg")
+    
+    return round(total_emission, 1)
+    
 def calculate_material_metrics():
     total_impact, total_recyclable, total_qty, total_plastic = 0, 0, 0, 0
     for mat in st.session_state["campaign_data"]["Materials"]:
@@ -345,9 +368,40 @@ for i in range(st.session_state["staff_group_count"]):
                     travel_dist = estimated
                     st.sidebar.success(f"Estimated: {estimated} km")
 
-    travel_mode = st.sidebar.selectbox(f"Travel Mode", ["Air", "Train", "Car", "Bus", "Other"], 
-                                      ["Air", "Train", "Car", "Bus", "Other"].index(default["Travel Mode"]), 
-                                      key=f"staff_{i}_mode")
+    # In the "Staff Travel Groups" section of the sidebar (where travel_mode is selected)
+# Replace the existing travel_mode selectbox with this:
+
+# Expand travel mode options to include flight seat classes
+travel_mode_options = [
+    "Air - Economy", 
+    "Air - Premium Economy", 
+    "Air - Business", 
+    "Air - First Class",
+    "Train", 
+    "Car", 
+    "Bus", 
+    "Other"
+]
+
+# Get default mode index (handle old data compatibility)
+default_mode = default["Travel Mode"]
+if default_mode == "Air":  # Convert old "Air" to "Air - Economy" for compatibility
+    default_mode = "Air - Economy"
+try:
+    mode_index = travel_mode_options.index(default_mode)
+except ValueError:
+    mode_index = 0  # Fallback to Economy if mode is unknown
+
+travel_mode = st.sidebar.selectbox(
+    f"Travel Mode (Group {i+1})", 
+    travel_mode_options, 
+    index=mode_index, 
+    key=f"staff_{i}_mode"
+)
+
+# Show seat class info tooltip for flights
+if travel_mode.startswith("Air -"):
+    st.sidebar.caption("ℹ️ Higher seat classes increase carbon emissions due to greater space per passenger.")
     accommodation = st.sidebar.selectbox(f"Accommodation", ["Budget", "3-star", "4-star", "5-star"], 
                                         ["Budget", "3-star", "4-star", "5-star"].index(default["Accommodation"]), 
                                         key=f"staff_{i}_acc")
@@ -453,10 +507,33 @@ st.dataframe(pd.DataFrame(data["Staff Groups"]), use_container_width=True)
 # 3. Carbon Footprint
 st.subheader("🚨 Carbon Footprint")
 st.metric("Total CO₂ Emissions", f"{total_carbon} kg")
-fig, ax = plt.subplots(figsize=(8, 4))
-ax.bar(["Your Campaign", "Industry Benchmark"], [total_carbon, 2000], color=["#FF6B6B", "#4ECDC4"])
-ax.set_ylabel("CO₂ (kg)")
-st.pyplot(fig)
+
+# Add seat class impact comparison chart (if there are flights)
+flight_groups = [g for g in data["Staff Groups"] if g["Travel Mode"].startswith("Air -")]
+if flight_groups:
+    st.subheader("✈️ Flight Seat Class Impact")
+    # Get emission data for each seat class
+    seat_class_data = {}
+    for group in flight_groups:
+        mode = group["Travel Mode"]
+        if mode not in seat_class_data:
+            seat_class_data[mode] = 0
+        # Calculate emissions for this group's seat class
+        emissions = group["Travel Distance (km)"] * EMISSION_FACTORS[mode] * group["Staff Count"]
+        seat_class_data[mode] += emissions
+    
+    # Create bar chart
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(seat_class_data.keys(), seat_class_data.values(), color=["#4CAF50", "#FFC107", "#FF9800", "#F44336"])
+    ax.set_ylabel("CO₂ Emissions (kg)")
+    ax.set_title("Emissions by Flight Seat Class")
+    st.pyplot(fig)
+else:
+    # No flights? Show standard benchmark chart
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(["Your Campaign", "Industry Benchmark"], [total_carbon, 2000], color=["#FF6B6B", "#4ECDC4"])
+    ax.set_ylabel("CO₂ (kg)")
+    st.pyplot(fig)
 
 # 4. Materials Analysis
 st.subheader("📦 Materials Analysis")
