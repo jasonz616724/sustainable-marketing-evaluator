@@ -133,7 +133,7 @@ def extract_pdf_text(uploaded_file):
         st.error(f"⚠️ PDF extraction failed: {str(e)}")
         return ""
 
---- AI-Enhanced Features ---
+#--- AI-Enhanced Features ---
 def ai_estimate_travel_distance(departure, destination):
     if not departure or not destination or departure == destination:
         return 0
