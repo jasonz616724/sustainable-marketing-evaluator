@@ -18,7 +18,7 @@ try:
     AI_API_KEY = st.secrets["OPENAI_API_KEY"]
 except KeyError:
     st.warning("API key not found in secrets. Some AI features may be limited.")
-    AI_API_KEY = None
+    OPENAI_API_KEY = None
 
 # --- Session State ---
 if "campaign_data" not in st.session_state:
