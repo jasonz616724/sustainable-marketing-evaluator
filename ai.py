@@ -525,14 +525,17 @@ gov_checks = [st.sidebar.checkbox(c, st.session_state["campaign_data"]["governan
 
 st.sidebar.subheader("⚙️ Operational Efficiency")
 # In the Operations Criteria sidebar section:
+# In the Operations Criteria sidebar section:
 ops_checks = []
 for i, criteria in enumerate(OPERATIONS_CRITERIA):
     # Auto-check "duration ≤3 days" based on actual duration
     if criteria == "Campaign duration ≤ 3 days":
-        # Pre-select if duration is ≤3 days
-        default_val = data["Duration (days)"] <= 3
+        # Safely get duration (with fallback to 0 if key is missing)
+        campaign_duration = data.get("Duration (days)", 0)  # Use .get() to avoid KeyError
+        default_val = campaign_duration <= 3  # Auto-check if duration is ≤3
     else:
-        default_val = data["operations_checks"][i]
+        # For other criteria, use existing value (or False if missing)
+        default_val = data.get("operations_checks", [False]*5)[i]
     
     checked = st.sidebar.checkbox(
         criteria, 
