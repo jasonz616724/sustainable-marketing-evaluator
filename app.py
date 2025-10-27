@@ -202,4 +202,34 @@ if st.button("Generate AI Recommendations"):
 else:
     ai_recommendations = st.session_state.get("ai_recommendations", "")
 if ai_recommendations:
-    st.markdown(ai_re
+    st.markdown(ai_recommendations)
+
+# --- ESG Report Preview ---
+st.subheader("📄 ESG Report Preview")
+with st.expander("View ESG Summary"):
+    st.write(f"**Campaign:** {campaign_name}")
+    st.write(f"**Location:** {location}")
+    st.write(f"**Duration:** {duration} days")
+    st.write(f"**Staff Count:** {staff_count}")
+    st.write(f"**Travel Mode:** {travel_mode}")
+    st.write(f"**Total Score:** {total_score}/100")
+    st.write("**SDG Contributions:**")
+    for sdg, status in sdg_status.items():
+        st.write(f"- {sdg}: {status}")
+    st.write("**Recommendations:**")
+    for rec in ai_recommendations.split("\n"):
+        st.write(f"- {rec}")
+
+# --- PDF Export ---
+if st.button("📄 Export ESG Report as PDF"):
+    html = generate_html_report()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
+        pdfkit.from_string(html, tmpfile.name)
+        with open(tmpfile.name, "rb") as f:
+            st.download_button(
+                label="Download ESG Report PDF",
+                data=f,
+                file_name=f"{campaign_name}_ESG_Report.pdf",
+                mime="application/pdf"
+            )
+        os.unlink(tmpfile.name)
