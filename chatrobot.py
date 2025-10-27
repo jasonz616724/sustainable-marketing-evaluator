@@ -1,10 +1,9 @@
 import streamlit as st
 import json
 from openai import OpenAI
-from io import StringIO
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
+st.set_page_config(page_title="Sustainable Marketing Marketing Evaluator", layout="wide")
 
 # --- Initialize OpenAI Client ---
 try:
@@ -426,12 +425,11 @@ for message in st.session_state["conversation"]:
     with st.chat_message(message["role"]):
         st.text(message["content"])
 
-# Report download
+# Report download (fixed: use raw text instead of StringIO)
 if st.session_state["current_step"] == 6 and st.session_state["report_text"]:
-    report_file = StringIO(st.session_state["report_text"])
     st.download_button(
         label="📥 Download Report",
-        data=report_file,
+        data=st.session_state["report_text"],  # Directly use the text string
         file_name=f"{st.session_state['campaign_data']['Campaign Name']}_sustainability_report.txt",
         mime="text/plain"
     )
