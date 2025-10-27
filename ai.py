@@ -524,14 +524,14 @@ gov_checks = [st.sidebar.checkbox(c, st.session_state["campaign_data"]["governan
              for i, c in enumerate(GOVERNANCE_CRITERIA)]
 
 st.sidebar.subheader("⚙️ Operational Efficiency")
-# In the Operations Criteria sidebar section:
-# In the Operations Criteria sidebar section:
 ops_checks = []
+# Define data from session state first
+data = st.session_state["campaign_data"]
 for i, criteria in enumerate(OPERATIONS_CRITERIA):
     # Auto-check "duration ≤3 days" based on actual duration
     if criteria == "Campaign duration ≤ 3 days":
-        # Safely get duration (with fallback to 0 if key is missing)
-        campaign_duration = data.get("Duration (days)", 0)  # Use .get() to avoid KeyError
+        # Safely get duration from session state data
+        campaign_duration = data.get("Duration (days)", 0)
         default_val = campaign_duration <= 3  # Auto-check if duration is ≤3
     else:
         # For other criteria, use existing value (or False if missing)
@@ -543,7 +543,6 @@ for i, criteria in enumerate(OPERATIONS_CRITERIA):
         key=f"ops_{i}"
     )
     ops_checks.append(checked)
-
 # Save Button
 if st.sidebar.button("💾 Save Details", use_container_width=True):
     st.session_state["campaign_data"].update({
