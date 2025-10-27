@@ -7,7 +7,7 @@ import os
 import fitz
 import requests  # For free distance API
 
-# --- Page Config ---
+
 st.set_page_config(page_title="Sustainable Marketing Evaluator", layout="wide")
 
 # --- Mock Recommendations ---
